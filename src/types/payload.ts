@@ -1,4 +1,14 @@
-export type PayloadSchema = { [key: string]: { [key: string]: unknown } };
+type SerializableValue =
+  | string
+  | number
+  | boolean
+  | null
+  | SerializableValue[]
+  | { [key: string]: SerializableValue };
+
+export type PayloadSchema = {
+  [key: string]: { [key: string]: SerializableValue };
+};
 
 export type QueueNames<Payload extends PayloadSchema> = keyof Payload & string;
 
