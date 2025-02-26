@@ -1,0 +1,83 @@
+{
+  "name": "@nivalis/n-queue",
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Redis Queue for Next.js",
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
+  },
+  "homepage": "https://github.com/nivalis-studio/n-queue#readme",
+  "repository": {
+    "url": "git+https://github.com/nivalis-studio/n-queue.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nivalis-studio/n-queue/issues"
+  },
+  "license": "MIT",
+  "packageManager": "bun@1.2.1",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "LICENSE",
+    "README.md",
+    "dist"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "build": "unbuild",
+    "prepublishOnly": "unbuild",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix .",
+    "ts": "tsc",
+    "prepare": "bunx lefthook install"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "19.7.1",
+    "@commitlint/config-conventional": "19.7.1",
+    "@nivalis/eslint-config": "4.4.0",
+    "@nivalis/prettier-config": "3.5.1",
+    "@total-typescript/ts-reset": "0.6.1",
+    "@types/bun": "latest",
+    "eslint": "9.21.0",
+    "lefthook": "1.11.2",
+    "lint-staged": "15.4.3",
+    "unbuild": "3.4.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "lint-staged": {
+    "*": "eslint --quiet --fix"
+  },
+  "prettier": "@nivalis/prettier-config",
+  "unbuild": {
+    "rollup": {
+      "esbuild": {
+        "target": "node22",
+        "minify": true
+      }
+    },
+    "declaration": true,
+    "clean": true,
+    "failOnWarn": false,
+    "exports": "named",
+    "preserveModules": true,
+    "sourcemap": true
+  },
+  "dependencies": {}
+}

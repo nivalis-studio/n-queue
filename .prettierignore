@@ -1,0 +1,21 @@
+node_modules
+
+# Next.js & Vercel Directories
+.next
+.turbo
+.swc
+build
+public/build
+
+# Files that should not be parsed
+CODEOWNERS
+
+# Outputs
+dist
+target
+compiled
+
+pnpm-lock.yaml
+
+.env
+.gitignore

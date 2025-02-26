@@ -1,0 +1,8 @@
+commit-msg:
+  commands:
+    commitlint:
+      run: bunx commitlint --edit
+pre-commit:
+  commands:
+    lint:
+      run: bunx lint-staged
