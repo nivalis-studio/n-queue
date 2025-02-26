@@ -74,6 +74,12 @@ export class Job<
   move = async (state: JobState) => {
     if (!this.id) return;
 
+    if (this.state === state) return;
+
+    if (this.state === 'waiting' && state === 'active') {
+      return await this.queue.take();
+    }
+
     const client = await this.queue.getRedisClient();
 
     const oldState = this.state;
@@ -88,6 +94,8 @@ export class Job<
     multi.lPush(this.queue.keys[state], this.id);
 
     await multi.exec();
+
+    return this;
   };
 
   prepare = (): JobData => {
