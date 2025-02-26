@@ -1,8 +1,8 @@
 import { Job } from './job';
 import { getKeysMap } from './types/keys';
+import type { RedisClientType } from 'redis';
 import type { KeysMap } from './types/keys';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
-import type { RedisClientType } from 'redis';
 
 export class Queue<
   Payload extends PayloadSchema,
@@ -36,9 +36,19 @@ export class Queue<
 
     const job = await Job.unpack<Payload, QueueName>(this, id);
 
-    if (!job) return null;
+    if (!job?.id) return null;
 
-    await job.move('active');
+    job.state = 'active';
+    job.updatedAt = Date.now().toString();
+
+    const jobData = job.prepare();
+
+    const multi = client.multi();
+
+    multi.hSet(job.id, jobData);
+    multi.lPush(this.keys.active, job.id);
+
+    await multi.exec();
 
     return job;
   };

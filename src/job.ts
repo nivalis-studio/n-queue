@@ -58,8 +58,15 @@ export class Job<
     const jobId = await client.incr(this.queue.keys.id);
 
     this.id = jobId.toString();
+    this.state = 'waiting';
+    this.updatedAt = Date.now().toString();
 
-    await this.move('waiting');
+    const multi = client.multi();
+
+    multi.hSet(this.id, this.prepare());
+    multi.lPush(this.queue.keys.waiting, this.id);
+
+    await multi.exec();
 
     return this.id;
   };
@@ -69,14 +76,21 @@ export class Job<
 
     const client = await this.queue.getRedisClient();
 
+    const oldState = this.state;
+
     this.state = state;
     this.updatedAt = Date.now().toString();
 
-    await client.hSet(this.id, this.prepare());
-    await client.lPush(this.queue.keys[state], this.id);
+    const multi = client.multi();
+
+    multi.hSet(this.id, this.prepare());
+    multi.lRem(this.queue.keys[oldState], 0, this.id);
+    multi.lPush(this.queue.keys[state], this.id);
+
+    await multi.exec();
   };
 
-  private prepare = (): JobData => {
+  prepare = (): JobData => {
     return {
       name: this.name,
       payload: JSON.stringify(this.payload),
