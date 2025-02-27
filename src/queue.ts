@@ -119,12 +119,10 @@ export class Queue<
       const activeJob = job.withState('active');
       const jobData = activeJob.prepare();
 
-      await this.redisClient.moveJob(
-        id,
-        jobData,
-        this.keys.waiting,
-        this.keys.active,
-      );
+      await this.redisClient.moveJob(id, jobData, {
+        from: this.keys.waiting,
+        to: this.keys.active,
+      });
 
       return activeJob;
     } catch (error) {

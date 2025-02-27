@@ -1,5 +1,5 @@
 import type { RedisClientType } from 'redis';
-import type { JobData } from './types/job';
+import type { JobData, JobState } from './types/job';
 import type { KeysMap } from './types/keys';
 import type { PayloadSchema, QueueNames } from './types/payload';
 
@@ -22,17 +22,6 @@ export class RedisClient {
   }
 
   /**
-   * Increment a key in Redis
-   * @param {string} key - The key to increment
-   * @returns {Promise<number>} The new value
-   */
-  async incr(key: string): Promise<number> {
-    return await this.executeWithErrorHandling(
-      async client => await client.incr(key),
-    );
-  }
-
-  /**
    * Get all fields and values from a hash
    * @param {string} key - The hash key
    * @returns {Promise<{[key: string]: string}>} The hash fields and values
@@ -51,18 +40,6 @@ export class RedisClient {
   async lLen(key: string): Promise<number> {
     return await this.executeWithErrorHandling(
       async client => await client.lLen(key),
-    );
-  }
-
-  /**
-   * Push a value to the left of a list
-   * @param {string} key - The list key
-   * @param {string} value - The value to push
-   * @returns {Promise<number>} The new length of the list
-   */
-  async push(key: string, value: string): Promise<number> {
-    return await this.executeWithErrorHandling(
-      async client => await client.lPush(key, value),
     );
   }
 
@@ -116,20 +93,26 @@ export class RedisClient {
    * Move a job from one queue to another
    * @param {string} id - The job ID
    * @param {JobData} jobData - The job data
-   * @param {string} fromKey - The source queue key
-   * @param {string} toKey - The destination queue key
+   * @param {object} options - The options
+   * @param {string} options.from - The source queue key
+   * @param {string} options.to - The destination queue key
    * @returns {Promise<void>}
    */
   async moveJob(
     id: string,
     jobData: JobData,
-    fromKey: string,
-    toKey: string,
+    {
+      from,
+      to,
+    }: {
+      from: `${string}:${JobState}`;
+      to: `${string}:${JobState}`;
+    },
   ): Promise<void> {
     await this.executeMulti(multi => {
       multi.hSet(id, jobData as { [key: string]: string });
-      multi.lRem(fromKey, 0, id);
-      multi.lPush(toKey, id);
+      multi.lRem(from, 0, id);
+      multi.lPush(to, id);
     });
   }
 
@@ -180,6 +163,12 @@ export class RedisClient {
     };
   }
 
+  async setJobProgress(id: string, progress: number) {
+    await this.executeWithErrorHandling(async client => {
+      await client.hSet(id, 'progress', progress.toString());
+    });
+  }
+
   /**
    * Execute a Redis operation with error handling
    * @template T - The return type of the operation
@@ -196,5 +185,17 @@ export class RedisClient {
     } catch (error) {
       throw new Error(`Redis operation failed`, { cause: error });
     }
+  }
+
+  /**
+   * Push a value to the left of a list
+   * @param {string} key - The list key
+   * @param {string} value - The value to push
+   * @returns {Promise<number>} The new length of the list
+   */
+  private async _push(key: string, value: string): Promise<number> {
+    return await this.executeWithErrorHandling(
+      async client => await client.lPush(key, value),
+    );
   }
 }

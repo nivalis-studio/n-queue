@@ -209,12 +209,10 @@ export class Job<
       const oldState = this.state;
       const newJob = this.withState(state);
 
-      await this.redisClient.moveJob(
-        this.id,
-        newJob.prepare(),
-        this.queue.keys[oldState],
-        this.queue.keys[state],
-      );
+      await this.redisClient.moveJob(this.id, newJob.prepare(), {
+        from: this.queue.keys[oldState],
+        to: this.queue.keys[state],
+      });
 
       return newJob;
     } catch (error) {
