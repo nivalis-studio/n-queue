@@ -84,7 +84,7 @@ export class RedisClient {
     waitingKey: string,
   ): Promise<void> {
     await this.executeMulti(multi => {
-      multi.hSet(id, jobData as { [key: string]: string });
+      multi.hSet(id, jobData);
       multi.lPush(waitingKey, id);
     });
   }
@@ -110,7 +110,7 @@ export class RedisClient {
     },
   ): Promise<void> {
     await this.executeMulti(multi => {
-      multi.hSet(id, jobData as { [key: string]: string });
+      multi.hSet(id, jobData);
       multi.lRem(from, 0, id);
       multi.lPush(to, id);
     });
@@ -165,7 +165,10 @@ export class RedisClient {
 
   async setJobProgress(id: string, progress: number) {
     await this.executeWithErrorHandling(async client => {
-      await client.hSet(id, 'progress', progress.toString());
+      await client.hSet(id, {
+        progress: progress.toString(),
+        updatedAt: Date.now().toString(),
+      });
     });
   }
 
