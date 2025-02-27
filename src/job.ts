@@ -1,4 +1,5 @@
 import type { Queue } from './queue';
+import type { RedisClient } from './redis-client';
 import type { JobConfig, JobData, JobState } from './types/job';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
 
@@ -14,6 +15,7 @@ export class Job<
   public readonly updatedAt: string;
   private readonly queue: Queue<Payload, QueueName>;
   private readonly payload: Payload[QueueName][JobName];
+  private readonly redisClient: RedisClient;
 
   /**
    * Creates a new Job instance
@@ -27,6 +29,7 @@ export class Job<
     this.updatedAt = config.updatedAt ?? Date.now().toString();
     this.queue = config.queue;
     this.payload = config.payload;
+    this.redisClient = config.queue.redisClient;
   }
 
   /**
@@ -43,25 +46,30 @@ export class Job<
     queue: Queue<SPayload, SQueueName>,
     id: string,
   ) => {
-    const redisClient = await queue.getRedisClient();
-    const jobData = await redisClient.hGetAll(id);
+    try {
+      const jobData = await queue.redisClient.get(id);
 
-    if (!jobData.name || !jobData.payload) return null;
+      if (!jobData?.name || !jobData.payload) return null;
 
-    const jobName = jobData.name as JobNames<SPayload, SQueueName>;
-    const payload = JSON.parse(
-      jobData.payload,
-    ) as SPayload[SQueueName][typeof jobName];
+      const jobName = jobData.name as JobNames<SPayload, SQueueName>;
+      const payload = JSON.parse(
+        jobData.payload,
+      ) as SPayload[SQueueName][typeof jobName];
 
-    return new Job<SPayload, SQueueName, typeof jobName>({
-      queue,
-      name: jobName,
-      payload,
-      state: jobData.state as JobState,
-      id,
-      createdAt: jobData.createdAt,
-      updatedAt: jobData.updatedAt,
-    });
+      return new Job<SPayload, SQueueName, typeof jobName>({
+        queue,
+        name: jobName,
+        payload,
+        state: jobData.state as JobState,
+        id,
+        createdAt: jobData.createdAt,
+        updatedAt: jobData.updatedAt,
+      });
+    } catch (error) {
+      console.error(`Failed to unpack job ${id}:`, error);
+
+      return null;
+    }
   };
 
   /**
@@ -91,29 +99,30 @@ export class Job<
    * @returns {Promise<Job<any, any, any>>} A new Job instance with an id and waiting state
    */
   save = async (): Promise<Job<Payload, QueueName, JobName>> => {
-    const client = await this.queue.getRedisClient();
+    try {
+      const jobId = await this.redisClient.generateJobId(this.queue.keys.id);
 
-    const jobId = await client.incr(this.queue.keys.id);
-    const id = jobId.toString();
+      const savedJob = new Job<Payload, QueueName, JobName>({
+        queue: this.queue,
+        name: this.name,
+        payload: this.payload,
+        state: 'waiting',
+        id: jobId,
+        createdAt: this.createdAt,
+        updatedAt: Date.now().toString(),
+      });
 
-    const savedJob = new Job<Payload, QueueName, JobName>({
-      queue: this.queue,
-      name: this.name,
-      payload: this.payload,
-      state: 'waiting',
-      id,
-      createdAt: this.createdAt,
-      updatedAt: Date.now().toString(),
-    });
+      await this.redisClient.saveNewJob(
+        jobId,
+        savedJob.prepare(),
+        this.queue.keys.waiting,
+      );
 
-    const multi = client.multi();
-
-    multi.hSet(id, savedJob.prepare());
-    multi.lPush(this.queue.keys.waiting, id);
-
-    await multi.exec();
-
-    return savedJob;
+      return savedJob;
+    } catch (error) {
+      console.error(error);
+      throw new Error('Failed to save job');
+    }
   };
 
   /**
@@ -122,30 +131,32 @@ export class Job<
    * @returns {Promise<Job<any, any, any>>} A new Job instance with the updated state
    */
   move = async (state: JobState): Promise<Job<Payload, QueueName, JobName>> => {
-    if (!this.id) return this;
+    try {
+      if (!this.id) return this;
 
-    if (this.state === state) return this;
+      if (this.state === state) return this;
 
-    if (this.state === 'waiting' && state === 'active') {
-      const activeJob = await this.queue.take();
+      if (this.state === 'waiting' && state === 'active') {
+        const activeJob = await this.queue.take();
 
-      return (activeJob as Job<Payload, QueueName, JobName>) ?? this;
+        return (activeJob as Job<Payload, QueueName, JobName>) ?? this;
+      }
+
+      const oldState = this.state;
+      const newJob = this.withState(state);
+
+      await this.redisClient.moveJob(
+        this.id,
+        newJob.prepare(),
+        this.queue.keys[oldState],
+        this.queue.keys[state],
+      );
+
+      return newJob;
+    } catch (error) {
+      console.error(error);
+      throw new Error(`Failed to move job to state ${state}`);
     }
-
-    const client = await this.queue.getRedisClient();
-
-    const oldState = this.state;
-    const newJob = this.withState(state);
-
-    const multi = client.multi();
-
-    multi.hSet(this.id, newJob.prepare());
-    multi.lRem(this.queue.keys[oldState], 0, this.id);
-    multi.lPush(this.queue.keys[state], this.id);
-
-    await multi.exec();
-
-    return newJob;
   };
 
   /**

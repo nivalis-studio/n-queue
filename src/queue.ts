@@ -1,5 +1,6 @@
 import { Job } from './job';
 import { getKeysMap } from './types/keys';
+import { RedisClient } from './redis-client';
 import type { RedisClientType } from 'redis';
 import type { KeysMap } from './types/keys';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
@@ -10,6 +11,7 @@ export class Queue<
   QueueName extends QueueNames<Payload>,
 > {
   public readonly keys: KeysMap<Payload, QueueName>;
+  public readonly redisClient: RedisClient;
   private concurrency: number;
 
   /**
@@ -20,11 +22,12 @@ export class Queue<
    */
   constructor(
     public readonly name: QueueName,
-    public readonly getRedisClient: () => Promise<RedisClientType>,
+    getRedisClient: () => Promise<RedisClientType>,
     options?: QueueOptions,
   ) {
     this.keys = getKeysMap<Payload, QueueName>(name);
     this.concurrency = options?.concurrency ?? -1;
+    this.redisClient = new RedisClient(getRedisClient);
   }
 
   /**
@@ -52,33 +55,36 @@ export class Queue<
    * @returns {Promise<Job<any, any, any> | null>} The next job or null if no jobs are available or concurrency limit is reached
    */
   take = async () => {
-    const client = await this.getRedisClient();
+    try {
+      const activeCount = await this.redisClient.lLen(this.keys.active);
 
-    const activeCount = await client.lLen(this.keys.active);
+      if (this.concurrency > 0 && activeCount >= this.concurrency) {
+        return null;
+      }
 
-    if (this.concurrency > 0 && activeCount >= this.concurrency) {
-      return null;
+      const id = await this.redisClient.pop(this.keys.waiting);
+
+      if (!id) return null;
+
+      const job = await Job.unpack<Payload, QueueName>(this, id);
+
+      if (!job?.id) return null;
+
+      const activeJob = job.withState('active');
+      const jobData = activeJob.prepare();
+
+      await this.redisClient.moveJob(
+        id,
+        jobData,
+        this.keys.waiting,
+        this.keys.active,
+      );
+
+      return activeJob;
+    } catch (error) {
+      console.error('Failed to take job from queue:', error);
+      throw new Error('Failed to take job from queue');
     }
-
-    const id = await client.rPop(this.keys.waiting);
-
-    if (!id) return null;
-
-    const job = await Job.unpack<Payload, QueueName>(this, id);
-
-    if (!job?.id) return null;
-
-    const activeJob = job.withState('active');
-    const jobData = activeJob.prepare();
-
-    const multi = client.multi();
-
-    multi.hSet(id, jobData);
-    multi.lPush(this.keys.active, id);
-
-    await multi.exec();
-
-    return activeJob;
   };
 
   /**
@@ -95,28 +101,15 @@ export class Queue<
     total: number;
     availableSlots: number;
   }> => {
-    const client = await this.getRedisClient();
-
-    const [waitingCount, activeCount, failedCount, completedCount] =
-      await Promise.all([
-        client.lLen(this.keys.waiting),
-        client.lLen(this.keys.active),
-        client.lLen(this.keys.failed),
-        client.lLen(this.keys.completed),
-      ]);
-
-    return {
-      name: this.name,
-      concurrency: this.concurrency,
-      waiting: waitingCount,
-      active: activeCount,
-      failed: failedCount,
-      completed: completedCount,
-      total: waitingCount + activeCount + failedCount + completedCount,
-      availableSlots:
-        this.concurrency === -1
-          ? -1
-          : Math.max(0, this.concurrency - activeCount),
-    };
+    try {
+      return await this.redisClient.getQueueStats(
+        this.keys,
+        this.name,
+        this.concurrency,
+      );
+    } catch (error) {
+      console.error('Failed to get queue stats:', error);
+      throw new Error('Failed to get queue stats');
+    }
   };
 }
