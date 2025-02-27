@@ -22,7 +22,7 @@ The system consists of three main components:
 ## Installation
 
 ```bash
-npm install nivalis-queue
+npm install @nivalis/n-queue
 ```
 
 ## Usage
@@ -31,7 +31,7 @@ npm install nivalis-queue
 
 ```typescript
 import { createClient } from 'redis';
-import { Queue } from 'nivalis-queue';
+import { Queue } from '@nivalis/n-queue';
 
 // Define your payload schema
 type MyPayload = {

@@ -8,11 +8,66 @@ export class Job<
   QueueName extends QueueNames<Payload>,
   JobName extends JobNames<Payload, QueueName>,
 > {
+  /**
+   * The name of the job.
+   */
   public readonly name: JobName;
-  public readonly state: JobState;
+
+  /**
+   * The unique ID of the job in redis.
+   */
   public readonly id: string | null;
+
+  /**
+   * The current state of the job.
+   */
+  public readonly state: JobState;
+
+  /**
+   * The time the job was created.
+   */
   public readonly createdAt: string;
+
+  /**
+   * The time the job was last updated.
+   */
   public readonly updatedAt: string;
+
+  /**
+   * Timestamp for when the job finished (completed or failed).
+   */
+  public processedAt: string | null = null;
+
+  /**
+   * The progress a job has performed so far.
+   * @default 0
+   */
+  public progress = 0;
+
+  /**
+   * Ranges from 0 (highest priority) to 2 097 152 (lowest priority). Note that
+   * using priorities has a slight impact on performance,
+   * so do not use it if not required.
+   * @default 0
+   */
+  public priority = 0;
+
+  /**
+   * Number of attempts after the job has failed.
+   * @default 0
+   */
+  public attempts = 0;
+
+  /**
+   * Stacktrace for the error (for failed jobs).
+   */
+  public stacktrace: string[] = [];
+
+  /**
+   * The reason for the job failing (for failed jobs).
+   */
+  public failedReason: string | null = null;
+
   private readonly queue: Queue<Payload, QueueName>;
   private readonly payload: Payload[QueueName][JobName];
   private readonly redisClient: RedisClient;
