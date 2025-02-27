@@ -1,5 +1,5 @@
 import type { Queue } from './queue';
-import type { JobData, JobOptions, JobState } from './types/job';
+import type { JobConfig, JobData, JobState } from './types/job';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
 
 export class Job<
@@ -7,22 +7,35 @@ export class Job<
   QueueName extends QueueNames<Payload>,
   JobName extends JobNames<Payload, QueueName>,
 > {
-  public id: string | null = null;
-  public state: JobState;
-  public createdAt: string;
-  public updatedAt: string;
+  public readonly name: JobName;
+  public readonly state: JobState;
+  public readonly id: string | null;
+  public readonly createdAt: string;
+  public readonly updatedAt: string;
+  private readonly queue: Queue<Payload, QueueName>;
+  private readonly payload: Payload[QueueName][JobName];
 
-  constructor(
-    private queue: Queue<Payload, QueueName>,
-    public name: JobName,
-    private payload: Payload[QueueName][JobName],
-    options?: JobOptions,
-  ) {
-    this.state = options?.state ?? 'waiting';
-    this.createdAt = options?.createdAt ?? Date.now().toString();
-    this.updatedAt = options?.updatedAt ?? Date.now().toString();
+  /**
+   * Creates a new Job instance
+   * @param {object} config - The job configuration
+   */
+  constructor(config: JobConfig<Payload, QueueName, JobName>) {
+    this.name = config.name;
+    this.state = config.state ?? 'waiting';
+    this.id = config.id ?? null;
+    this.createdAt = config.createdAt ?? Date.now().toString();
+    this.updatedAt = config.updatedAt ?? Date.now().toString();
+    this.queue = config.queue;
+    this.payload = config.payload;
   }
 
+  /**
+   * Unpacks a job from Redis by its id.
+   * @template T, U
+   * @param {Queue<T, U>} queue - The queue the job belongs to
+   * @param {string} id - The id of the job to unpack
+   * @returns {Promise<Job<T, U, JobNames<T, U>> | null>} The unpacked job or null if not found
+   */
   static unpack = async <
     SPayload extends PayloadSchema,
     SQueueName extends QueueNames<SPayload>,
@@ -40,64 +53,105 @@ export class Job<
       jobData.payload,
     ) as SPayload[SQueueName][typeof jobName];
 
-    return new Job<SPayload, SQueueName, typeof jobName>(
+    return new Job<SPayload, SQueueName, typeof jobName>({
       queue,
-      jobName,
+      name: jobName,
       payload,
-      {
-        state: jobData.state as JobState,
-        createdAt: jobData.createdAt,
-        updatedAt: jobData.updatedAt,
-      },
-    );
+      state: jobData.state as JobState,
+      id,
+      createdAt: jobData.createdAt,
+      updatedAt: jobData.updatedAt,
+    });
   };
 
-  save = async () => {
+  /**
+   * Create a new Job instance with a different state
+   * @param {JobState} state - The new state to assign to the job
+   * @returns {Job<any, any, any>} A new Job instance with the updated state
+   * @throws {Error} If the job doesn't have an id
+   */
+  withState(state: JobState): Job<Payload, QueueName, JobName> {
+    if (!this.id) {
+      throw new Error('Cannot change state of a job without an id');
+    }
+
+    return new Job<Payload, QueueName, JobName>({
+      queue: this.queue,
+      name: this.name,
+      payload: this.payload,
+      state,
+      id: this.id,
+      createdAt: this.createdAt,
+      updatedAt: Date.now().toString(),
+    });
+  }
+
+  /**
+   * Saves the job to Redis and adds it to the waiting queue
+   * @returns {Promise<Job<any, any, any>>} A new Job instance with an id and waiting state
+   */
+  save = async (): Promise<Job<Payload, QueueName, JobName>> => {
     const client = await this.queue.getRedisClient();
 
     const jobId = await client.incr(this.queue.keys.id);
+    const id = jobId.toString();
 
-    this.id = jobId.toString();
-    this.state = 'waiting';
-    this.updatedAt = Date.now().toString();
+    const savedJob = new Job<Payload, QueueName, JobName>({
+      queue: this.queue,
+      name: this.name,
+      payload: this.payload,
+      state: 'waiting',
+      id,
+      createdAt: this.createdAt,
+      updatedAt: Date.now().toString(),
+    });
 
     const multi = client.multi();
 
-    multi.hSet(this.id, this.prepare());
-    multi.lPush(this.queue.keys.waiting, this.id);
+    multi.hSet(id, savedJob.prepare());
+    multi.lPush(this.queue.keys.waiting, id);
 
     await multi.exec();
 
-    return this.id;
+    return savedJob;
   };
 
-  move = async (state: JobState) => {
-    if (!this.id) return;
+  /**
+   * Moves the job to a different state
+   * @param {JobState} state - The new state to move the job to
+   * @returns {Promise<Job<any, any, any>>} A new Job instance with the updated state
+   */
+  move = async (state: JobState): Promise<Job<Payload, QueueName, JobName>> => {
+    if (!this.id) return this;
 
-    if (this.state === state) return;
+    if (this.state === state) return this;
 
     if (this.state === 'waiting' && state === 'active') {
-      return await this.queue.take();
+      const activeJob = await this.queue.take();
+
+      return (activeJob as Job<Payload, QueueName, JobName>) ?? this;
     }
 
     const client = await this.queue.getRedisClient();
 
     const oldState = this.state;
-
-    this.state = state;
-    this.updatedAt = Date.now().toString();
+    const newJob = this.withState(state);
 
     const multi = client.multi();
 
-    multi.hSet(this.id, this.prepare());
+    multi.hSet(this.id, newJob.prepare());
     multi.lRem(this.queue.keys[oldState], 0, this.id);
     multi.lPush(this.queue.keys[state], this.id);
 
     await multi.exec();
 
-    return this;
+    return newJob;
   };
 
+  /**
+   * Prepares the job data for storage in Redis
+   * @returns {JobData} The job data ready for storage
+   */
   prepare = (): JobData => {
     return {
       name: this.name,

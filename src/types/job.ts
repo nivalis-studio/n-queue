@@ -1,3 +1,6 @@
+import type { Queue } from '../queue';
+import type { JobNames, PayloadSchema, QueueNames } from './payload';
+
 export type JobState = 'waiting' | 'active' | 'failed' | 'completed';
 
 export type JobData = {
@@ -9,8 +12,16 @@ export type JobData = {
   updatedAt: string;
 };
 
-export type JobOptions = {
+export type JobConfig<
+  Payload extends PayloadSchema,
+  QueueName extends QueueNames<Payload>,
+  JobName extends JobNames<Payload, QueueName>,
+> = {
+  queue: Queue<Payload, QueueName>;
+  name: JobName;
+  payload: Payload[QueueName][JobName];
   state?: JobState;
+  id?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };
