@@ -68,8 +68,12 @@ export class Job<
    */
   public failedReason: string | null = null;
 
+  /**
+   * The job data.
+   */
+  public readonly payload: Payload[QueueName][JobName];
+
   private readonly queue: Queue<Payload, QueueName>;
-  private readonly payload: Payload[QueueName][JobName];
   private readonly redisClient: RedisClient;
 
   /**
