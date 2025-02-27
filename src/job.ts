@@ -1,3 +1,4 @@
+import { v4 as uuid } from 'uuid';
 import type { Queue } from './queue';
 import type { RedisClient } from './redis-client';
 import type { JobConfig, JobData, JobState } from './types/job';
@@ -16,7 +17,7 @@ export class Job<
   /**
    * The unique ID of the job in redis.
    */
-  public readonly id: string | null;
+  public readonly id: string;
 
   /**
    * The current state of the job.
@@ -83,7 +84,7 @@ export class Job<
   constructor(config: JobConfig<Payload, QueueName, JobName>) {
     this.name = config.name;
     this.state = config.state ?? 'waiting';
-    this.id = config.id ?? null;
+    this.id = config.id ?? uuid();
     this.createdAt = config.createdAt ?? Date.now().toString();
     this.updatedAt = config.updatedAt ?? Date.now().toString();
     this.queue = config.queue;
@@ -138,11 +139,7 @@ export class Job<
    * @throws {Error} If the job doesn't have an id
    */
   withState(state: JobState): Job<Payload, QueueName, JobName> {
-    if (!this.id) {
-      throw new Error('Cannot change state of a job without an id');
-    }
-
-    return new Job<Payload, QueueName, JobName>({
+    const job = new Job<Payload, QueueName, JobName>({
       queue: this.queue,
       name: this.name,
       payload: this.payload,
@@ -151,6 +148,17 @@ export class Job<
       createdAt: this.createdAt,
       updatedAt: Date.now().toString(),
     });
+
+    if (state === 'failed') {
+      job.processedAt = this.updatedAt;
+    }
+
+    if (state === 'completed') {
+      job.processedAt = this.updatedAt;
+      job.progress = 1;
+    }
+
+    return job;
   }
 
   /**
@@ -159,20 +167,18 @@ export class Job<
    */
   save = async (): Promise<Job<Payload, QueueName, JobName>> => {
     try {
-      const jobId = await this.redisClient.generateJobId(this.queue.keys.id);
-
       const savedJob = new Job<Payload, QueueName, JobName>({
         queue: this.queue,
         name: this.name,
         payload: this.payload,
         state: 'waiting',
-        id: jobId,
+        id: this.id,
         createdAt: this.createdAt,
         updatedAt: Date.now().toString(),
       });
 
-      await this.redisClient.saveNewJob(
-        jobId,
+      await this.redisClient.createJob(
+        this.id,
         savedJob.prepare(),
         this.queue.keys.waiting,
       );
@@ -191,8 +197,6 @@ export class Job<
    */
   move = async (state: JobState): Promise<Job<Payload, QueueName, JobName>> => {
     try {
-      if (!this.id) return this;
-
       if (this.state === state) return this;
 
       if (this.state === 'waiting' && state === 'active') {

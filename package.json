@@ -81,5 +81,7 @@
     "preserveModules": true,
     "sourcemap": true
   },
-  "dependencies": {}
+  "dependencies": {
+    "uuid": "^11.1.0"
+  }
 }

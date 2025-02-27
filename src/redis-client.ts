@@ -18,12 +18,7 @@ export class RedisClient {
    * @returns {Promise<RedisClientType>} The Redis client
    */
   async getRedisClient(): Promise<RedisClientType> {
-    try {
-      return await this.getClient();
-    } catch (error) {
-      console.error('Failed to get Redis client:', error);
-      throw new Error('Redis connection failed');
-    }
+    return await this.getClient();
   }
 
   /**
@@ -34,7 +29,6 @@ export class RedisClient {
   async incr(key: string): Promise<number> {
     return await this.executeWithErrorHandling(
       async client => await client.incr(key),
-      `Failed to increment key: ${key}`,
     );
   }
 
@@ -46,7 +40,6 @@ export class RedisClient {
   async get(key: string): Promise<{ [key: string]: string }> {
     return await this.executeWithErrorHandling(
       async client => await client.hGetAll(key),
-      `Failed to get hash: ${key}`,
     );
   }
 
@@ -58,7 +51,6 @@ export class RedisClient {
   async lLen(key: string): Promise<number> {
     return await this.executeWithErrorHandling(
       async client => await client.lLen(key),
-      `Failed to get list length: ${key}`,
     );
   }
 
@@ -71,7 +63,6 @@ export class RedisClient {
   async push(key: string, value: string): Promise<number> {
     return await this.executeWithErrorHandling(
       async client => await client.lPush(key, value),
-      `Failed to push to list left: ${key}`,
     );
   }
 
@@ -83,7 +74,6 @@ export class RedisClient {
   async pop(key: string): Promise<string | null> {
     return await this.executeWithErrorHandling(
       async client => await client.rPop(key),
-      `Failed to pop from list right: ${key}`,
     );
   }
 
@@ -101,18 +91,7 @@ export class RedisClient {
       operations(multi);
 
       return await multi.exec();
-    }, 'Failed to execute multi operation');
-  }
-
-  /**
-   * Generate a new job ID
-   * @param {string} idKey - The key for job IDs
-   * @returns {Promise<string>} The new job ID
-   */
-  async generateJobId(idKey: string): Promise<string> {
-    const jobId = await this.incr(idKey);
-
-    return jobId.toString();
+    });
   }
 
   /**
@@ -122,7 +101,7 @@ export class RedisClient {
    * @param {string} waitingKey - The waiting queue key
    * @returns {Promise<void>}
    */
-  async saveNewJob(
+  async createJob(
     id: string,
     jobData: JobData,
     waitingKey: string,
@@ -205,20 +184,18 @@ export class RedisClient {
    * Execute a Redis operation with error handling
    * @template T - The return type of the operation
    * @param {Function} operation - The operation to execute
-   * @param {string} errorMessage - Error message to display if operation fails
    * @returns {Promise<T>} The result of the operation
    */
   private async executeWithErrorHandling<T>(
     operation: (client: RedisClientType) => Promise<T>,
-    errorMessage: string,
   ): Promise<T> {
     try {
       const client = await this.getRedisClient();
 
       return await operation(client);
     } catch (error) {
-      console.error(`${errorMessage}:`, error);
-      throw new Error(`Redis operation failed: ${errorMessage}`);
+      console.error(error);
+      throw new Error(`Redis operation failed`);
     }
   }
 }
