@@ -6,7 +6,10 @@ import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
 /**
  * RedisClient class to handle Redis connection and basic operations with error handling
  */
-export class RedisClient {
+export class RedisClient<
+  Payload extends PayloadSchema,
+  QueueName extends QueueNames<Payload>,
+> {
   /**
    * Creates a new RedisClient instance
    * @param {() => Promise<RedisClientType>} getClient - Function to get a Redis client
@@ -26,10 +29,12 @@ export class RedisClient {
    * @param {string} key - The hash key
    * @returns {Promise<{[key: string]: string}>} The hash fields and values
    */
-  async get(key: string): Promise<{ [key: string]: string }> {
-    return await this.executeWithErrorHandling(
+  async get<
+    JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
+  >(key: string): Promise<JobData<Payload, QueueName, JobName> | null> {
+    return (await this.executeWithErrorHandling(
       async client => await client.hGetAll(key),
-    );
+    )) as JobData<Payload, QueueName, JobName> | null;
   }
 
   /**
@@ -46,13 +51,10 @@ export class RedisClient {
   /**
    * Pop a value from the right of a list
    * @param {string} key - The list key
-   * @param {JobNames<any, any>} jobName The name of the job to pop
+   * @param {JobNames<any, string>} jobName The name of the job to pop
    * @returns {Promise<string | null>} The popped value or null if the list is empty
    */
-  async pop<
-    Payload extends PayloadSchema,
-    QueueName extends QueueNames<Payload>,
-  >(
+  async pop(
     key: string,
     jobName?: JobNames<Payload, QueueName>,
   ): Promise<string | null> {
@@ -148,9 +150,11 @@ export class RedisClient {
    * @param {string} options.to - The destination queue key
    * @returns {Promise<void>}
    */
-  async moveJob(
+  async moveJob<
+    JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
+  >(
     id: string,
-    jobData: JobData,
+    jobData: JobData<Payload, QueueName, JobName>,
     {
       from,
       to,
@@ -168,17 +172,13 @@ export class RedisClient {
 
   /**
    * Get queue statistics
-   * @template Payload - The payload schema type
    * @template QueueName - The queue name type
-   * @param {KeysMap<Payload, QueueName>} keys - The keys map
+   * @param {KeysMap<any, QueueName>} keys - The keys map
    * @param {QueueName} queueName - The queue name
    * @param {number} concurrency - The concurrency limit
    * @returns {Promise<object>} Queue statistics
    */
-  async getQueueStats<
-    Payload extends PayloadSchema,
-    QueueName extends QueueNames<Payload>,
-  >(
+  async getQueueStats(
     keys: KeysMap<Payload, QueueName>,
     queueName: QueueName,
     concurrency: number,

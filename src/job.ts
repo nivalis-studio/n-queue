@@ -75,7 +75,7 @@ export class Job<
   public readonly payload: Payload[QueueName][JobName];
 
   private readonly queue: Queue<Payload, QueueName>;
-  private readonly redisClient: RedisClient;
+  private readonly redisClient: RedisClient<Payload, QueueName>;
 
   /**
    * Creates a new Job instance
@@ -107,20 +107,17 @@ export class Job<
   static unpack = async <
     SPayload extends PayloadSchema,
     SQueueName extends QueueNames<SPayload>,
-    SJobName extends JobNames<SPayload, SQueueName> = JobNames<
-      SPayload,
-      SQueueName
-    >,
+    SJobName extends JobNames<SPayload, SQueueName>,
   >(
     queue: Queue<SPayload, SQueueName>,
     id: string,
   ) => {
     try {
-      const jobData = await queue.redisClient.get(id);
+      const jobData = await queue.redisClient.get<SJobName>(id);
 
-      if (!jobData?.name || !jobData.payload) return null;
+      if (!jobData) return null;
 
-      const jobName = jobData.name as SJobName;
+      const jobName = jobData.name;
       const payload = JSON.parse(
         jobData.payload,
       ) as SPayload[SQueueName][typeof jobName];
@@ -129,7 +126,7 @@ export class Job<
         queue,
         name: jobName,
         payload,
-        state: jobData.state as JobState,
+        state: jobData.state,
         id,
         createdAt: jobData.createdAt,
         updatedAt: jobData.updatedAt,

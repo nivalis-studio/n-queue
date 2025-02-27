@@ -8,10 +8,10 @@ import type { QueueOptions } from './types/queue';
 
 export class Queue<
   Payload extends PayloadSchema,
-  QueueName extends QueueNames<Payload>,
+  QueueName extends QueueNames<Payload> = QueueNames<Payload>,
 > {
   public readonly keys: KeysMap<Payload, QueueName>;
-  public readonly redisClient: RedisClient;
+  public readonly redisClient: RedisClient<Payload, QueueName>;
   private concurrency: number;
 
   /**
@@ -75,13 +75,11 @@ export class Queue<
     }
   };
 
-  process = async (
-    fn: (
-      job: Job<Payload, QueueName, JobNames<Payload, QueueName>>,
-    ) => Promise<void>,
-    jobName?: JobNames<Payload, QueueName>,
+  process = async <JobName extends JobNames<Payload, QueueName>>(
+    fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
+    jobName?: JobName,
   ) => {
-    const job = await this.take(jobName);
+    const job = await this.take<JobName>(jobName);
 
     if (!job) return;
 
@@ -102,9 +100,7 @@ export class Queue<
    * @param {JobNames<any, any>} jobName The name of the job to take
    * @returns {Promise<Job<any, any, any> | null>} The next job or null if no jobs are available or concurrency limit is reached
    */
-  private take = async <
-    JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
-  >(
+  private take = async <JobName extends JobNames<Payload, QueueName>>(
     jobName?: JobName,
   ) => {
     try {
