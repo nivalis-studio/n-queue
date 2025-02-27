@@ -76,20 +76,14 @@ await emailQueue.add('sendEmail', {
 });
 
 // Process jobs
-const job = await emailQueue.take();
-if (job) {
-  try {
-    // Process the job
-    const { payload } = job;
-    console.log(`Sending email to ${payload.to}`);
+await emailQueue.process(async (job) => {
+  // Process the job
+  const { payload } = job;
+  console.log(`Sending email to ${payload.to}`);
 
-    // Mark job as completed
-    await job.move('completed');
-  } catch (error) {
-    // Mark job as failed
-    await job.move('failed');
-  }
-}
+  // No need to manually mark as completed or failed
+  // The process method handles this automatically
+});
 
 // Get queue statistics
 const stats = await emailQueue.getStats();
@@ -109,7 +103,7 @@ class Queue<Payload, QueueName> {
   );
 
   add<JobName>(jobName: JobName, payload: Payload[QueueName][JobName]): Promise<Job>;
-  take(): Promise<Job | null>;
+  process(fn: (job: Job<Payload, QueueName, JobNames<Payload, QueueName>>) => Promise<void>): Promise<void>;
   getStats(): Promise<QueueStats>;
 }
 ```

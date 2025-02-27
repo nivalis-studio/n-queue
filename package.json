@@ -7,6 +7,9 @@
     "access": "public",
     "provenance": false
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "homepage": "https://github.com/nivalis-studio/n-queue#readme",
   "repository": {
     "url": "git+https://github.com/nivalis-studio/n-queue.git"

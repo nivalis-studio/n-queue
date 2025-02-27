@@ -194,8 +194,7 @@ export class RedisClient {
 
       return await operation(client);
     } catch (error) {
-      console.error(error);
-      throw new Error(`Redis operation failed`);
+      throw new Error(`Redis operation failed`, { cause: error });
     }
   }
 }

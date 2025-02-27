@@ -51,10 +51,56 @@ export class Queue<
   };
 
   /**
+   * Get statistics about the queue
+   * @returns {Promise<object>} An object containing statistics about the queue
+   */
+  getStats = async (): Promise<{
+    name: QueueName;
+    concurrency: number;
+    waiting: number;
+    active: number;
+    failed: number;
+    completed: number;
+    total: number;
+    availableSlots: number;
+  }> => {
+    try {
+      return await this.redisClient.getQueueStats(
+        this.keys,
+        this.name,
+        this.concurrency,
+      );
+    } catch (error) {
+      throw new Error('Failed to get queue stats', { cause: error });
+    }
+  };
+
+  process = async (
+    fn: (
+      job: Job<Payload, QueueName, JobNames<Payload, QueueName>>,
+    ) => Promise<void>,
+  ) => {
+    const job = await this.take();
+
+    if (!job) return;
+
+    try {
+      await fn(job);
+
+      await job.move('completed');
+    } catch (error) {
+      await job.move('failed');
+      throw new Error('Failed to process job', {
+        cause: error,
+      });
+    }
+  };
+
+  /**
    * Takes the next job from the waiting queue and moves it to the active queue
    * @returns {Promise<Job<any, any, any> | null>} The next job or null if no jobs are available or concurrency limit is reached
    */
-  take = async () => {
+  private take = async () => {
     try {
       const activeCount = await this.redisClient.lLen(this.keys.active);
 
@@ -82,34 +128,9 @@ export class Queue<
 
       return activeJob;
     } catch (error) {
-      console.error('Failed to take job from queue:', error);
-      throw new Error('Failed to take job from queue');
-    }
-  };
-
-  /**
-   * Get statistics about the queue
-   * @returns {Promise<object>} An object containing statistics about the queue
-   */
-  getStats = async (): Promise<{
-    name: QueueName;
-    concurrency: number;
-    waiting: number;
-    active: number;
-    failed: number;
-    completed: number;
-    total: number;
-    availableSlots: number;
-  }> => {
-    try {
-      return await this.redisClient.getQueueStats(
-        this.keys,
-        this.name,
-        this.concurrency,
-      );
-    } catch (error) {
-      console.error('Failed to get queue stats:', error);
-      throw new Error('Failed to get queue stats');
+      throw new Error('Failed to take job from queue', {
+        cause: error,
+      });
     }
   };
 }

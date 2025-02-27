@@ -185,8 +185,9 @@ export class Job<
 
       return savedJob;
     } catch (error) {
-      console.error(error);
-      throw new Error('Failed to save job');
+      throw new Error('Failed to save job', {
+        cause: error,
+      });
     }
   };
 
@@ -200,9 +201,9 @@ export class Job<
       if (this.state === state) return this;
 
       if (this.state === 'waiting' && state === 'active') {
-        const activeJob = await this.queue.take();
-
-        return (activeJob as Job<Payload, QueueName, JobName>) ?? this;
+        throw new Error(
+          'Cannot move job to active state from waiting state, use queue.process() instead',
+        );
       }
 
       const oldState = this.state;
@@ -217,8 +218,9 @@ export class Job<
 
       return newJob;
     } catch (error) {
-      console.error(error);
-      throw new Error(`Failed to move job to state ${state}`);
+      throw new Error(`Failed to move job to state ${state}`, {
+        cause: error,
+      });
     }
   };
 
