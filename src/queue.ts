@@ -79,8 +79,9 @@ export class Queue<
     fn: (
       job: Job<Payload, QueueName, JobNames<Payload, QueueName>>,
     ) => Promise<void>,
+    jobName?: JobNames<Payload, QueueName>,
   ) => {
-    const job = await this.take();
+    const job = await this.take(jobName);
 
     if (!job) return;
 
@@ -98,9 +99,14 @@ export class Queue<
 
   /**
    * Takes the next job from the waiting queue and moves it to the active queue
+   * @param {JobNames<any, any>} jobName The name of the job to take
    * @returns {Promise<Job<any, any, any> | null>} The next job or null if no jobs are available or concurrency limit is reached
    */
-  private take = async () => {
+  private take = async <
+    JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
+  >(
+    jobName?: JobName,
+  ) => {
     try {
       const activeCount = await this.redisClient.lLen(this.keys.active);
 
@@ -108,11 +114,11 @@ export class Queue<
         return null;
       }
 
-      const id = await this.redisClient.pop(this.keys.waiting);
+      const id = await this.redisClient.pop(this.keys.waiting, jobName);
 
       if (!id) return null;
 
-      const job = await Job.unpack<Payload, QueueName>(this, id);
+      const job = await Job.unpack<Payload, QueueName, JobName>(this, id);
 
       if (!job?.id) return null;
 

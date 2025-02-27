@@ -1,7 +1,7 @@
 import type { RedisClientType } from 'redis';
 import type { JobData, JobState } from './types/job';
 import type { KeysMap } from './types/keys';
-import type { PayloadSchema, QueueNames } from './types/payload';
+import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
 
 /**
  * RedisClient class to handle Redis connection and basic operations with error handling
@@ -46,12 +46,62 @@ export class RedisClient {
   /**
    * Pop a value from the right of a list
    * @param {string} key - The list key
+   * @param {JobNames<any, any>} jobName The name of the job to pop
    * @returns {Promise<string | null>} The popped value or null if the list is empty
    */
-  async pop(key: string): Promise<string | null> {
+  async pop<
+    Payload extends PayloadSchema,
+    QueueName extends QueueNames<Payload>,
+  >(
+    key: string,
+    jobName?: JobNames<Payload, QueueName>,
+  ): Promise<string | null> {
+    if (jobName) {
+      return await this.popByName(key, jobName);
+    }
+
     return await this.executeWithErrorHandling(
       async client => await client.rPop(key),
     );
+  }
+
+  /**
+   * Find a job by name in a list
+   * @param {string} listKey - The list key
+   * @param {string} jobName - The job name to find
+   * @returns {Promise<string | null>} The job ID or null if not found
+   */
+  async findJobByName(
+    listKey: string,
+    jobName: string,
+  ): Promise<string | null> {
+    return await this.executeWithErrorHandling(async client => {
+      const ids = await client.lRange(listKey, 0, -1);
+
+      if (ids.length === 0) return null;
+
+      const id = ids.find(item => item.split(':')[0] === jobName);
+
+      return id ?? null;
+    });
+  }
+
+  /**
+   * Pop a job by name from a list
+   * @param {string} listKey - The list key
+   * @param {string} jobName - The job name to find and pop
+   * @returns {Promise<string | null>} The job ID or null if not found
+   */
+  async popByName(listKey: string, jobName: string): Promise<string | null> {
+    const id = await this.findJobByName(listKey, jobName);
+
+    if (!id) return null;
+
+    await this.executeWithErrorHandling(
+      async client => await client.lRem(listKey, 1, id),
+    );
+
+    return id;
   }
 
   /**

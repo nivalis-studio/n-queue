@@ -83,13 +83,18 @@ export class Job<
    */
   constructor(config: JobConfig<Payload, QueueName, JobName>) {
     this.name = config.name;
-    this.state = config.state ?? 'waiting';
-    this.id = config.id ?? uuid();
-    this.createdAt = config.createdAt ?? Date.now().toString();
-    this.updatedAt = config.updatedAt ?? Date.now().toString();
     this.queue = config.queue;
     this.payload = config.payload;
     this.redisClient = config.queue.redisClient;
+
+    this.state = config.state ?? 'waiting';
+
+    const now = Date.now().toString();
+
+    this.createdAt = config.createdAt ?? now;
+    this.updatedAt = config.updatedAt ?? now;
+
+    this.id = config.id ?? `${this.name}:${uuid()}`;
   }
 
   /**
@@ -102,6 +107,10 @@ export class Job<
   static unpack = async <
     SPayload extends PayloadSchema,
     SQueueName extends QueueNames<SPayload>,
+    SJobName extends JobNames<SPayload, SQueueName> = JobNames<
+      SPayload,
+      SQueueName
+    >,
   >(
     queue: Queue<SPayload, SQueueName>,
     id: string,
@@ -111,7 +120,7 @@ export class Job<
 
       if (!jobData?.name || !jobData.payload) return null;
 
-      const jobName = jobData.name as JobNames<SPayload, SQueueName>;
+      const jobName = jobData.name as SJobName;
       const payload = JSON.parse(
         jobData.payload,
       ) as SPayload[SQueueName][typeof jobName];
