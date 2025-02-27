@@ -39,8 +39,8 @@
   ],
   "scripts": {
     "test": "bun test",
-    "build": "unbuild",
-    "prepublishOnly": "unbuild",
+    "build": "unbuild && tsc && cp dist/index.d.ts dist/index.d.cts",
+    "prepublishOnly": "unbuild && tsc && cp dist/index.d.ts dist/index.d.cts",
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
     "ts": "tsc",
@@ -71,9 +71,10 @@
       "esbuild": {
         "target": "node22",
         "minify": true
-      }
+      },
+      "external": ["redis", "@redis/*"]
     },
-    "declaration": true,
+    "declaration": false,
     "clean": true,
     "failOnWarn": false,
     "exports": "named",
