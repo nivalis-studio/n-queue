@@ -75,10 +75,19 @@ export class Queue<
     }
   };
 
-  process = async <JobName extends JobNames<Payload, QueueName>>(
+  async process(
+    fn: (
+      job: Job<Payload, QueueName, JobNames<Payload, QueueName>>,
+    ) => Promise<void>,
+  ): Promise<void>;
+  async process<JobName extends JobNames<Payload, QueueName>>(
+    fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
+    jobName: JobName,
+  ): Promise<void>;
+  async process<JobName extends JobNames<Payload, QueueName>>(
     fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
     jobName?: JobName,
-  ) => {
+  ) {
     const job = await this.take<JobName>(jobName);
 
     if (!job) return;
@@ -93,7 +102,7 @@ export class Queue<
         cause: error,
       });
     }
-  };
+  }
 
   /**
    * Takes the next job from the waiting queue and moves it to the active queue
