@@ -104,7 +104,7 @@ export class Job<
    * @param {string} id - The id of the job to unpack
    * @returns {Promise<Job<T, U, JobNames<T, U>> | null>} The unpacked job or null if not found
    */
-  static unpack = async <
+  static readonly unpack = async <
     SPayload extends PayloadSchema,
     SQueueName extends QueueNames<SPayload>,
     SJobName extends JobNames<SPayload, SQueueName>,
