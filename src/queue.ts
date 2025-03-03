@@ -75,6 +75,23 @@ export class Queue<
     }
   };
 
+  /**
+   * Process jobs from the queue
+   *
+   * This method can be called in two ways:
+   * 1. Without a job name - processes any job from the queue
+   * 2. With a specific job name - processes only jobs with that name
+   * @example
+   * // Process any job
+   * await queue.process(async (job) => {
+   *   // Process the job
+   * });
+   *
+   * // Process only 'jobA' jobs
+   * await queue.process(async (job) => {
+   *   // Process the job
+   * }, 'jobA');
+   */
   async process(
     fn: (
       job: Job<Payload, QueueName, JobNames<Payload, QueueName>>,
@@ -87,8 +104,8 @@ export class Queue<
   async process<JobName extends JobNames<Payload, QueueName>>(
     fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
     jobName?: JobName,
-  ) {
-    const job = await this.take<JobName>(jobName);
+  ): Promise<void> {
+    const job = await this.take(jobName);
 
     if (!job) return;
 
@@ -109,9 +126,9 @@ export class Queue<
    * @param {JobNames<any, any>} jobName The name of the job to take
    * @returns {Promise<Job<any, any, any> | null>} The next job or null if no jobs are available or concurrency limit is reached
    */
-  private take = async <JobName extends JobNames<Payload, QueueName>>(
+  private async take<JobName extends JobNames<Payload, QueueName>>(
     jobName?: JobName,
-  ) => {
+  ): Promise<Job<Payload, QueueName, JobName> | null> {
     try {
       const activeCount = await this.redisClient.lLen(this.keys.active);
 
@@ -141,5 +158,5 @@ export class Queue<
         cause: error,
       });
     }
-  };
+  }
 }

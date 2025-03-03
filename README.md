@@ -75,15 +75,22 @@ await emailQueue.add('sendEmail', {
   body: 'This is a test email'
 });
 
-// Process jobs
+// Process any job from the queue
 await emailQueue.process(async (job) => {
   // Process the job
   const { payload } = job;
-  console.log(`Sending email to ${payload.to}`);
+  console.log(`Processing job: ${job.name}`);
 
   // No need to manually mark as completed or failed
   // The process method handles this automatically
 });
+
+// Process only specific job types
+await emailQueue.process(async (job) => {
+  // Process the sendEmail job
+  const { to, subject, body } = job.payload;
+  console.log(`Sending email to ${to}`);
+}, 'sendEmail');
 
 // Get queue statistics
 const stats = await emailQueue.getStats();
@@ -95,15 +102,34 @@ console.log(stats);
 ### Queue
 
 ```typescript
-class Queue<Payload, QueueName> {
+class Queue<
+  Payload extends PayloadSchema,
+  QueueName extends keyof Payload & string = keyof Payload & string
+> {
   constructor(
     name: QueueName,
     getRedisClient: () => Promise<RedisClientType>,
     options?: QueueOptions
   );
 
-  add<JobName>(jobName: JobName, payload: Payload[QueueName][JobName]): Promise<Job>;
-  process(fn: (job: Job<Payload, QueueName, JobNames<Payload, QueueName>>) => Promise<void>): Promise<void>;
+  // Add a job to the queue
+  add<JobName extends JobNames<Payload, QueueName>>(
+    jobName: JobName,
+    payload: Payload[QueueName][JobName]
+  ): Promise<Job<Payload, QueueName, JobName>>;
+
+  // Process any job from the queue
+  process(
+    fn: (job: Job<Payload, QueueName, JobNames<Payload, QueueName>>) => Promise<void>
+  ): Promise<void>;
+
+  // Process only jobs with a specific name
+  process<JobName extends JobNames<Payload, QueueName>>(
+    fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
+    jobName: JobName
+  ): Promise<void>;
+
+  // Get queue statistics
   getStats(): Promise<QueueStats>;
 }
 ```
