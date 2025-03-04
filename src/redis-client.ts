@@ -159,15 +159,47 @@ export class RedisClient<
       /* Ignore error if group already exists  */
     }
 
-    return await client.xReadGroup(
-      client.commandOptions({ isolated: true }),
-      groupName,
-      consumerName,
-      [{ key: eventsKey, id: '>' }],
-      {
-        COUNT: 1,
-        BLOCK: 5000,
-      },
+    try {
+      const response = await client.xReadGroup(
+        client.commandOptions({ isolated: true }),
+        groupName,
+        consumerName,
+        [{ key: eventsKey, id: '>' }],
+        {
+          COUNT: 1,
+          BLOCK: 5000,
+        },
+      );
+
+      if (!response) return null;
+
+      return response.map(stream => ({
+        name: stream.name,
+        messages: stream.messages.map(msg => ({
+          id: msg.id,
+          message: msg.message as unknown as RedisStreamEvents,
+        })),
+      }));
+    } catch (error) {
+      console.error('Error reading from stream:', error);
+
+      return null;
+    }
+  }
+
+  /**
+   * Acknowledge a message in a stream
+   * @param {string} streamKey - The stream key
+   * @param {string} groupName - The consumer group name
+   * @param {string} messageId - The message ID to acknowledge
+   */
+  async ackMessage(
+    streamKey: string,
+    groupName: string,
+    messageId: string,
+  ): Promise<void> {
+    await this.executeWithErrorHandling(
+      async client => await client.xAck(streamKey, groupName, messageId),
     );
   }
 

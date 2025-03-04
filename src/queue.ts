@@ -1,3 +1,4 @@
+/* eslint-disable no-await-in-loop */
 import { v4 as uuid } from 'uuid';
 import { Job } from './job';
 import { getKeysMap } from './types/keys';
@@ -6,7 +7,6 @@ import type { RedisClientType } from 'redis';
 import type { KeysMap } from './types/keys';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
 import type { QueueOptions } from './types/queue';
-import type { RedisStreamEvents } from './types/events';
 
 export class Queue<
   Payload extends PayloadSchema,
@@ -129,20 +129,88 @@ export class Queue<
     }
   }
 
+  /**
+   * Listen for events from the queue
+   * @template JobName - The name of the job to listen for
+   * @param {JobName} [jobName] - Optional job name to filter events
+   * @yields {object} An object containing the event type and job ID
+   */
+  // eslint-disable-next-line sonarjs/cognitive-complexity
+  async *listen(jobName?: JobNames<Payload, QueueName>) {
+    this.isListening = true;
+
+    while (this.isListening) {
+      try {
+        const responses = await this.redisClient.listen(
+          this.keys.events,
+          this.groupName,
+          this.consumerName,
+        );
+
+        if (!responses) continue;
+
+        for (const response of responses) {
+          const messages = response.messages;
+
+          for (const { id, message } of messages) {
+            const eventType = message.type;
+            const jobId = message.id;
+
+            // eslint-disable-next-line max-depth
+            if (jobName) {
+              const job = await Job.unpack<
+                Payload,
+                QueueName,
+                JobNames<Payload, QueueName>
+              >(this, jobId);
+
+              // eslint-disable-next-line max-depth
+              if (!job || job.name !== jobName) continue;
+            }
+
+            yield { eventType, jobId };
+
+            await this.emit(eventType, jobId, id);
+          }
+        }
+      } catch (error) {
+        console.error('Error processing stream messages:', error);
+
+        await new Promise(resolve => {
+          // eslint-disable-next-line @typescript-eslint/no-magic-numbers
+          setTimeout(resolve, 100);
+        });
+      }
+    }
+  }
+
+  /**
+   * Stream and process jobs from the queue
+   * @template JobName - The name of the job to stream
+   * @param {Function} fn - The function to process jobs
+   * @param {JobName} [jobName] - Optional job name to process only specific jobs
+   */
   async stream(
     fn: (
       job: Job<Payload, QueueName, JobNames<Payload, QueueName>>,
     ) => Promise<void>,
-  ) {
-    for await (const { eventType, jobId } of this.listen()) {
+  ): Promise<void>;
+  async stream<JobName extends JobNames<Payload, QueueName>>(
+    fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
+    jobName: JobName,
+  ): Promise<void>;
+  async stream<JobName extends JobNames<Payload, QueueName>>(
+    fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
+    jobName?: JobName,
+  ): Promise<void> {
+    for await (const { eventType, jobId } of this.listen(jobName)) {
       if (eventType === 'saved') {
-        const job = await this.get(jobId);
+        const job = await this.get<JobName>(jobId);
 
         if (!job) continue;
 
         try {
           await fn(job);
-
           await job.move('completed');
         } catch (error) {
           await job.move('failed');
@@ -154,39 +222,7 @@ export class Queue<
     }
   }
 
-  async *listen() {
-    this.isListening = true;
-
-    while (this.isListening) {
-      // eslint-disable-next-line no-await-in-loop
-      const responses = await this.redisClient.listen(
-        this.keys.events,
-        this.groupName,
-        this.consumerName,
-      );
-
-      if (!responses) continue;
-
-      for (const response of responses) {
-        const _stream: string = response.name;
-        const messages = response.messages as Array<{
-          id: string;
-          message: RedisStreamEvents;
-        }>;
-
-        for (const { id: _id, message } of messages) {
-          const eventType = message.type;
-          const jobId = message.id;
-
-          yield { eventType, jobId };
-
-          this.emit(eventType, jobId);
-        }
-      }
-    }
-  }
-
-  on(event: string, handler: (jobId: string) => void) {
+  on(event: string, handler: (jobId: string) => void | Promise<void>) {
     if (!this.eventHandlers.has(event)) {
       this.eventHandlers.set(event, new Set());
     }
@@ -209,12 +245,32 @@ export class Queue<
     this.eventHandlers.get(event)?.delete(handler);
   }
 
-  private emit(event: string, jobId: string) {
+  private async emit(event: string, jobId: string, messageId?: string) {
     const handlers = this.eventHandlers.get(event);
 
     if (!handlers) return;
 
-    for (const handler of handlers) handler(jobId);
+    try {
+      await Promise.all(
+        // eslint-disable-next-line @typescript-eslint/require-await
+        [...handlers].map(async handler => {
+          // eslint-disable-next-line @typescript-eslint/no-confusing-void-expression
+          return handler(jobId);
+        }),
+      );
+
+      // Only acknowledge if this is from a stream message
+      if (messageId) {
+        await this.redisClient.ackMessage(
+          this.keys.events,
+          this.groupName,
+          messageId,
+        );
+      }
+    } catch (error) {
+      console.error(`Error processing event ${event}:`, error);
+      throw error; // Re-throw to be caught by the listen loop
+    }
   }
 
   /**
