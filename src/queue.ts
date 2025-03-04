@@ -33,7 +33,11 @@ export class Queue<
   ) {
     this.keys = getKeysMap<Payload, QueueName>(name);
     this.concurrency = options?.concurrency ?? -1;
-    this.redisClient = new RedisClient(getRedisClient);
+    this.redisClient = new RedisClient(
+      getRedisClient,
+      this.keys,
+      this.concurrency,
+    );
     this.consumerName = `${this.name}:${uuid()}`;
     this.groupName = `${this.name}:events`;
   }
@@ -259,7 +263,6 @@ export class Queue<
         }),
       );
 
-      // Only acknowledge if this is from a stream message
       if (messageId) {
         await this.redisClient.ackMessage(
           this.keys.events,
@@ -269,7 +272,7 @@ export class Queue<
       }
     } catch (error) {
       console.error(`Error processing event ${event}:`, error);
-      throw error; // Re-throw to be caught by the listen loop
+      throw error;
     }
   }
 
@@ -292,19 +295,26 @@ export class Queue<
 
       if (!id) return null;
 
-      const job = await Job.unpack<Payload, QueueName, JobName>(this, id);
+      const jobData = await this.redisClient.getJobData<JobName>(id);
 
-      if (!job?.id) return null;
+      if (!jobData) return null;
 
-      const activeJob = job.withState('active');
-      const jobData = activeJob.prepare();
+      const job = new Job<Payload, QueueName, JobName>({
+        queue: this,
+        name: jobData.name,
+        payload: jobData.payload as Payload[QueueName][JobName],
+        state: 'active',
+        id,
+        createdAt: jobData.createdAt,
+        updatedAt: Date.now().toString(),
+      });
 
-      await this.redisClient.moveJob(id, jobData, {
+      await this.redisClient.moveJob(id, job.prepare(), {
         from: this.keys.waiting,
         to: this.keys.active,
       });
 
-      return activeJob;
+      return job;
     } catch (error) {
       throw new Error('Failed to take job from queue', {
         cause: error,
@@ -323,19 +333,26 @@ export class Queue<
     try {
       if (!id) return null;
 
-      const job = await Job.unpack<Payload, QueueName, JobName>(this, id);
+      const jobData = await this.redisClient.getJobData<JobName>(id);
 
-      if (!job?.id) return null;
+      if (!jobData) return null;
 
-      const activeJob = job.withState('active');
-      const jobData = activeJob.prepare();
+      const job = new Job<Payload, QueueName, JobName>({
+        queue: this,
+        name: jobData.name,
+        payload: jobData.payload as Payload[QueueName][JobName],
+        state: 'active',
+        id,
+        createdAt: jobData.createdAt,
+        updatedAt: Date.now().toString(),
+      });
 
-      await this.redisClient.moveJob(id, jobData, {
+      await this.redisClient.moveJob(id, job.prepare(), {
         from: this.keys.waiting,
         to: this.keys.active,
       });
 
-      return activeJob;
+      return job;
     } catch (error) {
       throw new Error('Failed to take job from queue', {
         cause: error,

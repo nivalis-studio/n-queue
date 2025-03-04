@@ -104,42 +104,32 @@ export class Job<
    * @param {string} id - The id of the job to unpack
    * @returns {Promise<Job<T, U, JobNames<T, U>> | null>} The unpacked job or null if not found
    */
-  static readonly unpack = async <
-    SPayload extends PayloadSchema,
-    SQueueName extends QueueNames<SPayload>,
-    SJobName extends JobNames<SPayload, SQueueName>,
+  static async unpack<
+    Payload extends PayloadSchema,
+    QueueName extends QueueNames<Payload>,
+    JobName extends JobNames<Payload, QueueName>,
   >(
-    queue: Queue<SPayload, SQueueName>,
+    queue: Queue<Payload, QueueName>,
     id: string,
-  ) => {
-    try {
-      // Validate job ID format
-      if (!JobId.isValid(id)) {
-        throw new Error(`Invalid job ID format: ${id}`);
-      }
-
-      const jobData = await queue.redisClient.get<SJobName>(id);
-
-      if (!jobData) return null;
-
-      const jobName = jobData.name;
-      const payload = jobData.payload as SPayload[SQueueName][typeof jobName];
-
-      return new Job<SPayload, SQueueName, typeof jobName>({
-        queue,
-        name: jobName,
-        payload,
-        state: jobData.state,
-        id,
-        createdAt: jobData.createdAt,
-        updatedAt: jobData.updatedAt,
-      });
-    } catch (error) {
-      console.error(`Failed to unpack job ${id}:`, error);
-
-      return null;
+  ): Promise<Job<Payload, QueueName, JobName> | null> {
+    if (!JobId.isValid(id)) {
+      throw new Error(`Invalid job ID format: ${id}`);
     }
-  };
+
+    const jobData = await queue.redisClient.getJobData<JobName>(id);
+
+    if (!jobData) return null;
+
+    return new Job<Payload, QueueName, JobName>({
+      queue,
+      name: jobData.name,
+      payload: jobData.payload as Payload[QueueName][JobName],
+      state: jobData.state,
+      id,
+      createdAt: jobData.createdAt,
+      updatedAt: jobData.updatedAt,
+    });
+  }
 
   /**
    * Create a new Job instance with a different state

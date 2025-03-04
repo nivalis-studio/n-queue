@@ -1,23 +1,17 @@
 # @nivalis/n-queue
 
-A lightweight, Redis-backed job queue system for Next.js applications.
+A robust, Redis-backed job queue system with type safety, event handling, and streaming capabilities.
 
 ## Features
 
-- Simple, type-safe API for job queue management
-- Redis-backed for persistence and reliability
-- Support for multiple queues with different job types
-- Concurrency control for parallel job processing
-- Comprehensive error handling
-- TypeScript support with full type safety
-
-## Architecture
-
-The system consists of three main components:
-
-1. **Queue**: Manages a collection of jobs with the same queue name
-2. **Job**: Represents a unit of work with payload data
-3. **RedisClient**: Handles Redis operations with error handling
+- 🎯 **Type-safe API**: Full TypeScript support with generic types for payloads and job names
+- 💾 **Redis-backed**: Reliable persistence and atomic operations
+- 🔄 **Event Streaming**: Real-time job status updates and event handling
+- 🎚️ **Concurrency Control**: Fine-grained control over parallel job processing
+- 🔍 **Job Tracking**: Comprehensive job lifecycle management and progress tracking
+- 🛡️ **Error Handling**: Robust error handling with automatic retries
+- 🔄 **Transaction Support**: Atomic operations for job state changes
+- 📊 **Queue Statistics**: Real-time queue metrics and monitoring
 
 ## Installation
 
@@ -25,9 +19,7 @@ The system consists of three main components:
 npm install @nivalis/n-queue
 ```
 
-## Usage
-
-### Basic Example
+## Quick Start
 
 ```typescript
 import { createClient } from 'redis';
@@ -51,7 +43,7 @@ type MyPayload = {
 // Create a Redis client factory
 const getRedisClient = async () => {
   const client = createClient({
-    url: 'redis://localhost:6379',
+    url: process.env.REDIS_URL ?? 'redis://localhost:6379',
   });
 
   if (!client.isOpen) {
@@ -61,76 +53,101 @@ const getRedisClient = async () => {
   return client;
 };
 
-// Create a queue
+// Create a queue with concurrency limit
 const emailQueue = new Queue<MyPayload, 'emailQueue'>(
   'emailQueue',
   getRedisClient,
   { concurrency: 5 }
 );
 
-// Add a job to the queue
-await emailQueue.add('sendEmail', {
+// Add jobs to the queue
+const emailJob = await emailQueue.add('sendEmail', {
   to: 'user@example.com',
-  subject: 'Hello',
-  body: 'This is a test email'
+  subject: 'Welcome!',
+  body: 'Welcome to our platform!'
 });
 
-// Process any job from the queue
+// Process jobs with automatic completion/failure handling
 await emailQueue.process(async (job) => {
-  // Process the job
-  const { payload } = job;
-  console.log(`Processing job: ${job.name}`);
-
-  // No need to manually mark as completed or failed
-  // The process method handles this automatically
+  console.log(`Processing ${job.name} job ${job.id}`);
+  await sendEmail(job.payload);
 });
 
-// Process only specific job types
+// Or process specific job types
 await emailQueue.process(async (job) => {
-  // Process the sendEmail job
-  const { to, subject, body } = job.payload;
-  console.log(`Sending email to ${to}`);
-}, 'sendEmail');
+  await sendNotification(job.payload);
+}, 'sendNotification');
 
-// Get queue statistics
-const stats = await emailQueue.getStats();
-console.log(stats);
+// Stream jobs in real-time
+await emailQueue.stream(async (job) => {
+  console.log(`Processing streamed job ${job.id}`);
+  await processJob(job);
+});
+
+// Listen for events
+emailQueue.on('saved', (jobId) => {
+  console.log(`Job ${jobId} was saved`);
+});
+
+emailQueue.on('completed', (jobId) => {
+  console.log(`Job ${jobId} completed successfully`);
+});
 ```
+
+## Architecture
+
+The system consists of three main components:
+
+### 1. Queue
+- Manages job lifecycle and processing
+- Handles concurrency and job distribution
+- Provides event streaming and real-time updates
+- Maintains queue statistics and monitoring
+
+### 2. Job
+- Represents a unit of work with typed payload
+- Tracks job state and progress
+- Manages job transitions and updates
+- Handles job-specific operations
+
+### 3. RedisClient
+- Provides atomic operations for job state changes
+- Manages Redis connections and error handling
+- Implements retry mechanisms and transaction support
+- Handles stream operations and event publishing
 
 ## API Reference
 
 ### Queue
 
 ```typescript
-class Queue<
-  Payload extends PayloadSchema,
-  QueueName extends keyof Payload & string = keyof Payload & string
-> {
+class Queue<Payload, QueueName> {
   constructor(
     name: QueueName,
     getRedisClient: () => Promise<RedisClientType>,
     options?: QueueOptions
   );
 
-  // Add a job to the queue
-  add<JobName extends JobNames<Payload, QueueName>>(
-    jobName: JobName,
-    payload: Payload[QueueName][JobName]
-  ): Promise<Job<Payload, QueueName, JobName>>;
+  // Job Management
+  add<JobName>(jobName: JobName, payload: Payload[QueueName][JobName]): Promise<Job>;
+  process(fn: (job: Job) => Promise<void>, jobName?: JobName): Promise<void>;
+  stream(fn: (job: Job) => Promise<void>, jobName?: JobName): Promise<void>;
 
-  // Process any job from the queue
-  process(
-    fn: (job: Job<Payload, QueueName, JobNames<Payload, QueueName>>) => Promise<void>
-  ): Promise<void>;
+  // Event Handling
+  on(event: string, handler: (jobId: string) => void): void;
+  once(event: string, handler: (jobId: string) => void): void;
 
-  // Process only jobs with a specific name
-  process<JobName extends JobNames<Payload, QueueName>>(
-    fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
-    jobName: JobName
-  ): Promise<void>;
-
-  // Get queue statistics
-  getStats(): Promise<QueueStats>;
+  // Queue Information
+  getStats(): Promise<{
+    name: QueueName;
+    concurrency: number;
+    waiting: number;
+    active: number;
+    failed: number;
+    completed: number;
+    total: number;
+    availableSlots: number;
+  }>;
 }
 ```
 
@@ -138,15 +155,83 @@ class Queue<
 
 ```typescript
 class Job<Payload, QueueName, JobName> {
-  id: string | null;
-  name: JobName;
-  state: 'waiting' | 'active' | 'completed' | 'failed';
-  payload: Payload[QueueName][JobName];
+  readonly id: string;
+  readonly name: JobName;
+  readonly state: JobState;
+  readonly payload: Payload[QueueName][JobName];
+  readonly createdAt: string;
+  readonly updatedAt: string;
 
+  progress: number;
+  processedAt: string | null;
+  attempts: number;
+  failedReason: string | null;
+  stacktrace: string[];
+
+  // Job Operations
   save(): Promise<Job>;
   move(state: JobState): Promise<Job>;
+  withState(state: JobState): Job;
 }
 ```
+
+### Queue Options
+
+```typescript
+interface QueueOptions {
+  concurrency?: number;  // Max concurrent jobs (-1 for unlimited)
+}
+```
+
+### Job States
+
+```typescript
+type JobState = 'waiting' | 'active' | 'completed' | 'failed';
+```
+
+### Events
+
+The queue emits the following events:
+
+- `saved`: When a job is added to the queue
+- `active`: When a job starts processing
+- `completed`: When a job completes successfully
+- `failed`: When a job fails
+- `progress`: When job progress is updated
+
+## Best Practices
+
+1. **Error Handling**
+   ```typescript
+   queue.process(async (job) => {
+     try {
+       await processJob(job);
+       // Job automatically marked as completed
+     } catch (error) {
+       // Job automatically marked as failed
+       console.error(`Job ${job.id} failed:`, error);
+       throw error; // Rethrow to trigger failure handling
+     }
+   });
+   ```
+
+2. **Progress Tracking**
+   ```typescript
+   queue.process(async (job) => {
+     for (let i = 0; i < items.length; i++) {
+       await processItem(items[i]);
+       job.progress = (i + 1) / items.length;
+     }
+   });
+   ```
+
+3. **Event Handling**
+   ```typescript
+   queue.on('failed', async (jobId) => {
+     const job = await Job.unpack(queue, jobId);
+     await notifyFailure(job);
+   });
+   ```
 
 ## License
 
