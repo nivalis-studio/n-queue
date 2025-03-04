@@ -2,6 +2,7 @@ import type { RedisClientType } from 'redis';
 import type { JobData, JobState } from './types/job';
 import type { KeysMap } from './types/keys';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
+import type { RedisStreamEvents } from './types/events';
 
 /**
  * RedisClient class to handle Redis connection and basic operations with error handling
@@ -128,17 +129,46 @@ export class RedisClient<
    * @param {string} id - The job ID
    * @param {JobData} jobData - The job data
    * @param {string} waitingKey - The waiting queue key
+   * @param {string} eventsKey - The queue key for events stream
    * @returns {Promise<void>}
    */
-  async createJob(
+  async saveJob(
     id: string,
     jobData: JobData,
     waitingKey: string,
+    eventsKey: string,
   ): Promise<void> {
     await this.executeMulti(multi => {
       multi.hSet(id, jobData);
       multi.lPush(waitingKey, id);
+      multi.xAdd(eventsKey, '*', {
+        type: 'saved',
+        id,
+      } satisfies RedisStreamEvents);
     });
+  }
+
+  async listen(eventsKey: string, groupName: string, consumerName: string) {
+    const client = await this.getRedisClient();
+
+    try {
+      await client.xGroupCreate(eventsKey, groupName, '0', {
+        MKSTREAM: true,
+      });
+    } catch {
+      /* Ignore error if group already exists  */
+    }
+
+    return await client.xReadGroup(
+      client.commandOptions({ isolated: true }),
+      groupName,
+      consumerName,
+      [{ key: eventsKey, id: '>' }],
+      {
+        COUNT: 1,
+        BLOCK: 5000,
+      },
+    );
   }
 
   /**

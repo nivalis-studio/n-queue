@@ -183,10 +183,11 @@ export class Job<
         updatedAt: Date.now().toString(),
       });
 
-      await this.redisClient.createJob(
+      await this.redisClient.saveJob(
         this.id,
         savedJob.prepare(),
         this.queue.keys.waiting,
+        this.queue.keys.events,
       );
 
       return savedJob;
