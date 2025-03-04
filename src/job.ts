@@ -1,4 +1,4 @@
-import { v4 as uuid } from 'uuid';
+import { JobId } from './utils/job-id';
 import type { Queue } from './queue';
 import type { RedisClient } from './redis-client';
 import type { JobConfig, JobData, JobState } from './types/job';
@@ -94,7 +94,7 @@ export class Job<
     this.createdAt = config.createdAt ?? now;
     this.updatedAt = config.updatedAt ?? now;
 
-    this.id = config.id ?? `${this.name}:${uuid()}`;
+    this.id = config.id ?? JobId.generate(this.name);
   }
 
   /**
@@ -113,14 +113,17 @@ export class Job<
     id: string,
   ) => {
     try {
+      // Validate job ID format
+      if (!JobId.isValid(id)) {
+        throw new Error(`Invalid job ID format: ${id}`);
+      }
+
       const jobData = await queue.redisClient.get<SJobName>(id);
 
       if (!jobData) return null;
 
       const jobName = jobData.name;
-      const payload = JSON.parse(
-        jobData.payload,
-      ) as SPayload[SQueueName][typeof jobName];
+      const payload = jobData.payload as SPayload[SQueueName][typeof jobName];
 
       return new Job<SPayload, SQueueName, typeof jobName>({
         queue,

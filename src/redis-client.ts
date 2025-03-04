@@ -1,3 +1,4 @@
+import { JobId } from './utils/job-id';
 import type { RedisClientType } from 'redis';
 import type { JobData, JobState } from './types/job';
 import type { KeysMap } from './types/keys';
@@ -28,14 +29,48 @@ export class RedisClient<
   /**
    * Get all fields and values from a hash
    * @param {string} key - The hash key
-   * @returns {Promise<{[key: string]: string}>} The hash fields and values
+   * @returns {Promise<JobData | null>} The hash fields and values or null if not found
    */
   async get<
     JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
   >(key: string): Promise<JobData<Payload, QueueName, JobName> | null> {
-    return (await this.executeWithErrorHandling(
-      async client => await client.hGetAll(key),
-    )) as JobData<Payload, QueueName, JobName> | null;
+    try {
+      const data = await this.executeWithErrorHandling(
+        async client => await client.hGetAll(key),
+      );
+
+      if (!data || Object.keys(data).length === 0) {
+        return null;
+      }
+
+      if (!data.name || !data.payload || !data.queue || !data.state) {
+        throw new Error(`Invalid job data structure for key ${key}`);
+      }
+
+      try {
+        const parsedPayload = JSON.parse(data.payload);
+
+        return {
+          ...data,
+          payload: parsedPayload,
+        } as unknown as JobData<Payload, QueueName, JobName>;
+      } catch (error) {
+        throw new Error(`Failed to parse job payload for key ${key}`, {
+          cause: error,
+        });
+      }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('Invalid job data')
+      ) {
+        throw error;
+      }
+
+      throw new Error(`Failed to get job data for key ${key}`, {
+        cause: error,
+      });
+    }
   }
 
   /**
@@ -83,9 +118,13 @@ export class RedisClient<
 
       if (ids.length === 0) return null;
 
-      const id = ids.find(item => item.split(':')[0] === jobName);
+      for (const id of ids) {
+        const name = JobId.getJobName(id);
 
-      return id ?? null;
+        if (name === jobName) return id;
+      }
+
+      return null;
     });
   }
 
@@ -118,9 +157,14 @@ export class RedisClient<
     return await this.executeWithErrorHandling(async client => {
       const multi = client.multi();
 
-      operations(multi);
+      try {
+        operations(multi);
 
-      return await multi.exec();
+        return await multi.exec();
+      } catch (error) {
+        multi.discard();
+        throw error;
+      }
     });
   }
 
@@ -204,7 +248,7 @@ export class RedisClient<
   }
 
   /**
-   * Move a job from one queue to another
+   * Move a job from one queue to another atomically
    * @param {string} id - The job ID
    * @param {JobData} jobData - The job data
    * @param {object} options - The options
@@ -225,7 +269,17 @@ export class RedisClient<
       to: `${string}:${JobState}`;
     },
   ): Promise<void> {
+    // Validate job ID format
+    if (!JobId.isValid(id)) {
+      throw new Error(`Invalid job ID format: ${id}`);
+    }
+
     await this.executeMulti(multi => {
+      // Use WATCH to ensure atomicity
+      multi.watch(from);
+      multi.watch(to);
+
+      // Move the job atomically
       multi.hSet(id, jobData);
       multi.lRem(from, 0, id);
       multi.lPush(to, id);
