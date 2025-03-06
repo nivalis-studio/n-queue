@@ -1,4 +1,4 @@
-import { JobId } from './utils/job-id';
+import type { JobId } from './job-id';
 import type { Queue } from './queue';
 import type { RedisClient } from './redis-client';
 import type { JobConfig, JobData, JobState } from './types/job';
@@ -75,6 +75,7 @@ export class Job<
   public readonly payload: Payload[QueueName][JobName];
 
   private readonly queue: Queue<Payload, QueueName>;
+  private readonly jobId: JobId;
   private readonly redisClient: RedisClient<Payload, QueueName>;
 
   /**
@@ -84,6 +85,7 @@ export class Job<
   constructor(config: JobConfig<Payload, QueueName, JobName>) {
     this.name = config.name;
     this.queue = config.queue;
+    this.jobId = config.queue.jobId;
     this.payload = config.payload;
     this.redisClient = config.queue.redisClient;
 
@@ -94,7 +96,7 @@ export class Job<
     this.createdAt = config.createdAt ?? now;
     this.updatedAt = config.updatedAt ?? now;
 
-    this.id = config.id ?? JobId.generate(this.name);
+    this.id = config.id ?? this.jobId.generate(this.name);
   }
 
   /**
@@ -112,7 +114,7 @@ export class Job<
     queue: Queue<Payload, QueueName>,
     id: string,
   ): Promise<Job<Payload, QueueName, JobName> | null> {
-    if (!JobId.isValid(id)) {
+    if (!queue.jobId.isValid(id)) {
       throw new Error(`Invalid job ID format: ${id}`);
     }
 
@@ -209,10 +211,15 @@ export class Job<
       const oldState = this.state;
       const newJob = this.withState(state);
 
-      await this.redisClient.moveJob(this.id, newJob.prepare(), {
-        from: this.queue.keys[oldState],
-        to: this.queue.keys[state],
-      });
+      await this.redisClient.moveJob(
+        this.id,
+        newJob.prepare(),
+        {
+          from: this.queue.keys[oldState],
+          to: this.queue.keys[state],
+        },
+        this.queue.jobId,
+      );
 
       return newJob;
     } catch (error) {

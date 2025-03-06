@@ -1,15 +1,16 @@
-/* eslint-disable no-await-in-loop */
-import { JobId } from './utils/job-id';
+import { sleep } from './lib/sleep';
+import type { JobId } from './job-id';
 import type { RedisClientType } from 'redis';
 import type { JobData, JobState } from './types/job';
 import type { KeysMap } from './types/keys';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
 import type { RedisStreamEvents } from './types/events';
+import type { BackoffStrategy, RedisClientOptions } from './types/queue';
 
-const DEFAULT_MAX_CONSECUTIVE_ERRORS = 5;
 const DEFAULT_RECONNECT_DELAY = 1000;
 const EXPONENTIAL_BACKOFF_BASE = 2;
 const MAX_RECONNECT_DELAY = 30_000;
+const DEFAULT_MAX_RETRIES = 3;
 
 /**
  * RedisClient class to handle Redis connection and basic operations with error handling
@@ -20,29 +21,25 @@ export class RedisClient<
   Payload extends PayloadSchema,
   QueueName extends QueueNames<Payload>,
 > {
-  private _maxConsecutiveErrors = DEFAULT_MAX_CONSECUTIVE_ERRORS;
-  private _reconnectDelay = DEFAULT_RECONNECT_DELAY;
+  private readonly maxRetries: number;
+  private readonly backoffStrategy: BackoffStrategy;
+  private consecutiveErrors = 0;
 
   /**
    * Creates a new RedisClient instance
    * @param {() => Promise<RedisClientType>} getClient - Function to get a Redis client
-   * @param {KeysMap<Payload, QueueName>} keys - The keys map for Redis operations
-   * @param {number} concurrency - The maximum number of concurrent jobs
-   * @template Payload - The payload schema type
-   * @template QueueName - The queue name type
+   * @param {RedisClientOptions} [options] - Optional configuration
    */
   constructor(
     private readonly getClient: () => Promise<RedisClientType>,
-    private readonly keys: KeysMap<Payload, QueueName>,
-    private readonly concurrency: number,
-  ) {}
-
-  private get maxConsecutiveErrors(): number {
-    return this._maxConsecutiveErrors;
-  }
-
-  private get reconnectDelay(): number {
-    return this._reconnectDelay;
+    options?: RedisClientOptions,
+  ) {
+    this.maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.backoffStrategy = options?.backoffStrategy ?? {
+      initialDelay: DEFAULT_RECONNECT_DELAY,
+      maxDelay: MAX_RECONNECT_DELAY,
+      factor: EXPONENTIAL_BACKOFF_BASE,
+    };
   }
 
   /**
@@ -73,15 +70,20 @@ export class RedisClient<
 
   /**
    * Get all fields and values from a hash
+   * @template JobName - The job name type
    * @param {string} key - The hash key
-   * @returns {Promise<JobData | null>} The hash fields and values or null if not found
+   * @returns {Promise<JobData<Payload, QueueName, JobName> | null>} The hash fields and values or null if not found
    */
   async getJobData<
     JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
   >(key: string): Promise<JobData<Payload, QueueName, JobName> | null> {
     try {
-      const data = await this.executeWithErrorHandling(
-        async client => await client.hGetAll(key),
+      const data = await this.executeWithRetry(
+        async () =>
+          await this.getRedisClient().then(
+            async client => await client.hGetAll(key),
+          ),
+        `getJobData(${key})`,
       );
 
       if (!data || Object.keys(data).length === 0) {
@@ -124,68 +126,90 @@ export class RedisClient<
    * @returns {Promise<number>} The length of the list
    */
   async lLen(key: string): Promise<number> {
-    return await this.executeWithErrorHandling(
-      async client => await client.lLen(key),
+    return await this.executeWithRetry(
+      async () =>
+        await this.getRedisClient().then(
+          async client => await client.lLen(key),
+        ),
+      `lLen(${key})`,
     );
   }
 
   /**
    * Pop a value from the right of a list
    * @param {string} key - The list key
-   * @param {JobNames<any, string>} jobName The name of the job to pop
+   * @param {object} jobId - The job ID to pop
+   * @param {JobNames<Payload, QueueName>} [jobName] - The name of the job to pop
    * @returns {Promise<string | null>} The popped value or null if the list is empty
    */
   async pop(
     key: string,
+    jobId: JobId,
     jobName?: JobNames<Payload, QueueName>,
   ): Promise<string | null> {
     if (jobName) {
-      return await this.popByName(key, jobName);
+      return await this.popByName(key, jobId, jobName);
     }
 
-    return await this.executeWithErrorHandling(
-      async client => await client.rPop(key),
+    return await this.executeWithRetry(
+      async () =>
+        await this.getRedisClient().then(
+          async client => await client.rPop(key),
+        ),
+      `pop(${key})`,
     );
   }
 
   /**
    * Find a job by name in a list
    * @param {string} listKey - The list key
+   * @param {JobId} jobId - The job ID to find
    * @param {string} jobName - The job name to find
    * @returns {Promise<string | null>} The job ID or null if not found
    */
   async findJobByName(
     listKey: string,
+    jobId: JobId,
     jobName: string,
   ): Promise<string | null> {
-    return await this.executeWithErrorHandling(async client => {
+    return await this.executeWithRetry(async () => {
+      const client = await this.getRedisClient();
       const ids = await client.lRange(listKey, 0, -1);
 
       if (ids.length === 0) return null;
 
       for (const id of ids) {
-        const name = JobId.getJobName(id);
+        const name = jobId?.getJobName(id);
 
         if (name === jobName) return id;
       }
 
       return null;
-    });
+    }, `findJobByName(${listKey}, ${jobName})`);
   }
 
   /**
    * Pop a job by name from a list
    * @param {string} listKey - The list key
+   * @param {JobId} jobId - The job ID to find
    * @param {string} jobName - The job name to find and pop
    * @returns {Promise<string | null>} The job ID or null if not found
    */
-  async popByName(listKey: string, jobName: string): Promise<string | null> {
-    const id = await this.findJobByName(listKey, jobName);
+  async popByName(
+    listKey: string,
+    jobId: JobId,
+    jobName: string,
+  ): Promise<string | null> {
+    const id = await this.findJobByName(listKey, jobId, jobName);
 
     if (!id) return null;
 
-    await this.executeWithErrorHandling(
-      async client => await client.lRem(listKey, 1, id),
+    await this.executeWithRetry(
+      async () =>
+        await this.getRedisClient().then(
+          async client => await client.lRem(listKey, 1, id),
+        ),
+      `popByName(${listKey}, ${jobName})`,
     );
 
     return id;
@@ -193,13 +217,14 @@ export class RedisClient<
 
   /**
    * Execute multiple Redis commands atomically
-   * @param {Function} operations - Function that defines the operations to execute
+   * @param {(multi: ReturnType<RedisClientType['multi']>) => void} operations - Function that defines the operations to execute
    * @returns {Promise<unknown>} The result of the operations
    */
   async executeMulti(
     operations: (multi: ReturnType<RedisClientType['multi']>) => void,
   ): Promise<unknown> {
-    return await this.executeWithErrorHandling(async client => {
+    return await this.executeWithRetry(async () => {
+      const client = await this.getRedisClient();
       const multi = client.multi();
 
       try {
@@ -210,7 +235,7 @@ export class RedisClient<
         multi.discard();
         throw error;
       }
-    });
+    }, 'executeMulti');
   }
 
   /**
@@ -237,21 +262,33 @@ export class RedisClient<
     });
   }
 
-  async listen(eventsKey: string, groupName: string, consumerName: string) {
-    let consecutiveErrors = 0;
-    const client = await this.getRedisClient();
-
+  /**
+   * Listen for events from Redis streams
+   * @param {string} eventsKey - The stream key to listen to
+   * @param {string} groupName - The consumer group name
+   * @param {string} consumerName - The consumer name within the group
+   * @returns {Promise<Array<{name: string; messages: Array<{id: string; message: RedisStreamEvents}>}> | null>} The stream messages or null if none available
+   */
+  async listen(
+    eventsKey: string,
+    groupName: string,
+    consumerName: string,
+  ): Promise<Array<{
+    name: string;
+    messages: Array<{
+      id: string;
+      message: RedisStreamEvents;
+    }>;
+  }> | null> {
     try {
-      await client.xGroupCreate(eventsKey, groupName, '0', {
-        MKSTREAM: true,
-      });
-    } catch {
-      /* Ignore error if group already exists */
-    }
+      const client = await this.getRedisClient();
 
-    try {
-      if (consecutiveErrors >= this.maxConsecutiveErrors) {
-        throw new Error('Too many consecutive errors, forcing reconnection');
+      try {
+        await client.xGroupCreate(eventsKey, groupName, '0', {
+          MKSTREAM: true,
+        });
+      } catch {
+        /* Ignore error if group already exists */
       }
 
       const response = await client.xReadGroup(
@@ -265,7 +302,13 @@ export class RedisClient<
         },
       );
 
-      if (!response) return null;
+      if (!response) {
+        this.resetErrorCount();
+
+        return null;
+      }
+
+      this.resetErrorCount();
 
       return response.map(stream => ({
         name: stream.name,
@@ -275,19 +318,15 @@ export class RedisClient<
         })),
       }));
     } catch (error) {
-      consecutiveErrors += 1;
+      this.consecutiveErrors += 1;
       console.error(
-        `Error reading from stream (attempt ${consecutiveErrors}/${this.maxConsecutiveErrors}):`,
+        `Error reading from stream (attempt ${this.consecutiveErrors}):`,
         error,
       );
 
-      const delay = Math.min(
-        this.reconnectDelay *
-          EXPONENTIAL_BACKOFF_BASE ** (consecutiveErrors - 1),
-        MAX_RECONNECT_DELAY,
-      );
+      const delay = this.calculateBackoffDelay();
 
-      setTimeout(() => {}, delay);
+      await sleep(delay);
 
       return null;
     }
@@ -298,24 +337,31 @@ export class RedisClient<
    * @param {string} streamKey - The stream key
    * @param {string} groupName - The consumer group name
    * @param {string} messageId - The message ID to acknowledge
+   * @returns {Promise<void>}
    */
   async ackMessage(
     streamKey: string,
     groupName: string,
     messageId: string,
   ): Promise<void> {
-    await this.executeWithErrorHandling(
-      async client => await client.xAck(streamKey, groupName, messageId),
+    await this.executeWithRetry(
+      async () =>
+        await this.getRedisClient().then(
+          async client => await client.xAck(streamKey, groupName, messageId),
+        ),
+      `ackMessage(${streamKey}, ${groupName}, ${messageId})`,
     );
   }
 
   /**
    * Move a job from one queue to another atomically
+   * @template JobName - The job name type
    * @param {string} id - The job ID
-   * @param {JobData} jobData - The job data
+   * @param {JobData<Payload, QueueName, JobName>} jobData - The job data
    * @param {object} options - The options
    * @param {string} options.from - The source queue key
    * @param {string} options.to - The destination queue key
+   * @param {JobId} [jobId] - The job ID to move
    * @returns {Promise<void>}
    */
   async moveJob<
@@ -330,16 +376,15 @@ export class RedisClient<
       from: `${string}:${JobState}`;
       to: `${string}:${JobState}`;
     },
+    jobId: JobId,
   ): Promise<void> {
-    if (!JobId.isValid(id)) {
+    if (jobId && !jobId?.isValid(id)) {
       throw new Error(`Invalid job ID format: ${id}`);
     }
 
-    const client = await this.getRedisClient();
-    const maxRetries = 3;
-    let retries = 0;
+    await this.executeWithRetry(async () => {
+      const client = await this.getRedisClient();
 
-    while (retries < maxRetries) {
       try {
         await client.watch([from, to]);
 
@@ -352,25 +397,18 @@ export class RedisClient<
         const result = await multi.exec();
 
         if (result === null) {
-          retries += 1;
-
-          continue;
+          throw new Error('Transaction failed, key modified');
         }
-
-        return;
       } catch (error) {
         await client.unwatch();
-        throw new Error('Failed to move job atomically', { cause: error });
+        throw error;
       }
-    }
-
-    throw new Error(`Failed to move job after ${maxRetries} attempts`);
+    }, `moveJob(${id}, ${from} -> ${to})`);
   }
 
   /**
    * Get queue statistics
-   * @template QueueName - The queue name type
-   * @param {KeysMap<any, QueueName>} keys - The keys map
+   * @param {KeysMap<Payload, QueueName>} keys - The keys map
    * @param {QueueName} queueName - The queue name
    * @param {number} concurrency - The concurrency limit
    * @returns {Promise<object>} Queue statistics
@@ -410,59 +448,85 @@ export class RedisClient<
     };
   }
 
-  async setJobProgress(id: string, progress: number) {
-    await this.executeWithErrorHandling(async client => {
+  /**
+   * Set the progress of a job
+   * @param {string} id - The job ID
+   * @param {number} progress - The progress value
+   * @returns {Promise<void>}
+   */
+  async setJobProgress(id: string, progress: number): Promise<void> {
+    await this.executeWithRetry(async () => {
+      const client = await this.getRedisClient();
+
       await client.hSet(id, {
         progress: progress.toString(),
         updatedAt: Date.now().toString(),
       });
-    });
+    }, 'setJobProgress');
   }
 
   /**
-   * Execute a Redis operation with error handling
+   * Calculate backoff delay based on consecutive errors
+   * @returns {number} The calculated delay in milliseconds
+   * @private
+   */
+  private calculateBackoffDelay(): number {
+    return Math.min(
+      this.backoffStrategy.initialDelay *
+        this.backoffStrategy.factor ** (this.consecutiveErrors - 1),
+      this.backoffStrategy.maxDelay,
+    );
+  }
+
+  /**
+   * Reset consecutive error count on successful operation
+   * @returns {void}
+   * @private
+   */
+  private resetErrorCount(): void {
+    this.consecutiveErrors = 0;
+  }
+
+  /**
+   * Execute a Redis operation with retries and backoff
    * @template T - The return type of the operation
-   * @param {Function} operation - The operation to execute
-   * @returns {Promise<T>} The result of the operation
+   * @param {() => Promise<T>} operation - The operation to execute
+   * @param {string} context - The context for error messages
+   * @returns {Promise<T>} The operation result
+   * @private
    */
-  private async executeWithErrorHandling<T>(
-    operation: (client: RedisClientType) => Promise<T>,
+  private async executeWithRetry<T>(
+    operation: () => Promise<T>,
+    context: string,
   ): Promise<T> {
-    try {
-      const client = await this.getRedisClient();
+    let attempts = 0;
 
-      return await operation(client);
-    } catch (error) {
-      throw new Error(`Redis operation failed`, { cause: error });
+    while (attempts < this.maxRetries) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await operation();
+
+        this.resetErrorCount();
+
+        return result;
+      } catch (error) {
+        attempts += 1;
+        this.consecutiveErrors += 1;
+
+        if (attempts === this.maxRetries) {
+          throw new Error(
+            `Failed to execute operation (${context}) after ${this.maxRetries} attempts`,
+            { cause: error },
+          );
+        }
+
+        const delay = this.calculateBackoffDelay();
+
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(delay);
+      }
     }
-  }
 
-  /**
-   * Helper method to move a job to active state
-   * @template JobName - The job name type extending JobNames<Payload, QueueName>
-   * @param {string} id - The ID of the job to move
-   * @param {string} fromKey - The source queue key
-   * @returns {Promise<JobData<Payload, QueueName, JobName> | null>} The updated job data or null if not found
-   */
-  private async moveToActive<JobName extends JobNames<Payload, QueueName>>(
-    id: string,
-    fromKey: `${string}:${JobState}`,
-  ): Promise<JobData<Payload, QueueName, JobName> | null> {
-    const jobData = await this.getJobData<JobName>(id);
-
-    if (!jobData) return null;
-
-    const activeJobData: JobData<Payload, QueueName, JobName> = {
-      ...jobData,
-      state: 'active',
-      updatedAt: Date.now().toString(),
-    };
-
-    await this.moveJob(id, activeJobData, {
-      from: fromKey,
-      to: this.keys.active,
-    });
-
-    return activeJobData;
+    throw new Error(`Unexpected retry loop exit for operation: ${context}`);
   }
 }
