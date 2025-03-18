@@ -72,6 +72,20 @@ export class Queue<
   };
 
   /**
+   * Get a job by id
+   * @template JobName - The name of the job
+   * @param {string} id - The id of the job to get
+   * @returns {Promise<Job<Payload, QueueName, JobName> | null>} The job or null if not found
+   */
+  get = async <
+    JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
+  >(
+    id: string,
+  ): Promise<Job<Payload, QueueName, JobName> | null> => {
+    return await Job.unpack<Payload, QueueName, JobName>(this, id);
+  };
+
+  /**
    * Listen for job events from the queue
    * @param {string} [jobName] - Optional job name to filter events by
    * @yields {JobEvent} The job events from the queue
