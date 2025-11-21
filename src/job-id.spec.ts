@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { v4 as uuid } from 'uuid';
 import { JobId } from './job-id';
 
+const DEFAULT_JOB_ID_REGEX = /^job:test-job:[a-f0-9-]+$/;
+const UUID_REGEX = /^[a-f0-9-]+$/;
+const CUSTOM_JOB_ID_REGEX = /^task\|test-job\|[a-f0-9-]+$/;
+
 describe('JobId', () => {
   const jobId = new JobId(':', 'job');
 
@@ -9,7 +13,7 @@ describe('JobId', () => {
     test('should generate a valid job ID', () => {
       const id = jobId.generate('test-job');
 
-      expect(id).toMatch(/^job:test-job:[a-f0-9-]+$/);
+      expect(id).toMatch(DEFAULT_JOB_ID_REGEX);
       expect(jobId.isValid(id)).toBe(true);
     });
   });
@@ -47,7 +51,7 @@ describe('JobId', () => {
       const id = jobId.generate('test-job');
       const extractedUuid = jobId.getUuid(id);
 
-      expect(extractedUuid).toMatch(/^[a-f0-9-]+$/);
+      expect(extractedUuid).toMatch(UUID_REGEX);
     });
 
     test('should throw error for invalid ID', () => {
@@ -69,7 +73,7 @@ describe('JobId', () => {
     test('should create valid ID from components without UUID', () => {
       const id = jobId.fromComponents('test-job');
 
-      expect(id).toMatch(/^job:test-job:[a-f0-9-]+$/);
+      expect(id).toMatch(DEFAULT_JOB_ID_REGEX);
       expect(jobId.isValid(id)).toBe(true);
     });
   });
@@ -79,7 +83,7 @@ describe('JobId', () => {
       const customJobId = new JobId('|', 'task');
       const id = customJobId.generate('test-job');
 
-      expect(id).toMatch(/^task\|test-job\|[a-f0-9-]+$/);
+      expect(id).toMatch(CUSTOM_JOB_ID_REGEX);
     });
   });
 });

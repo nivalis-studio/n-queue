@@ -21,6 +21,7 @@ export class RedisClient<
   Payload extends PayloadSchema,
   QueueName extends QueueNames<Payload>,
 > {
+  private readonly getClient: () => Promise<RedisClientType>;
   private readonly maxRetries: number;
   private readonly backoffStrategy: BackoffStrategy;
   private consecutiveErrors = 0;
@@ -30,10 +31,11 @@ export class RedisClient<
    * @param {() => Promise<RedisClientType>} getClient - Function to get a Redis client
    * @param {RedisClientOptions} [options] - Optional configuration
    */
-  constructor(
-    private readonly getClient: () => Promise<RedisClientType>,
+  public constructor(
+    getClient: () => Promise<RedisClientType>,
     options?: RedisClientOptions,
   ) {
+    this.getClient = getClient;
     this.maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.backoffStrategy = options?.backoffStrategy ?? {
       initialDelay: DEFAULT_RECONNECT_DELAY,
@@ -46,7 +48,7 @@ export class RedisClient<
    * Get the Redis client with error handling
    * @returns {Promise<RedisClientType>} The Redis client
    */
-  async getRedisClient(): Promise<RedisClientType> {
+  public async getRedisClient(): Promise<RedisClientType> {
     return await this.getClient();
   }
 
@@ -56,7 +58,7 @@ export class RedisClient<
    * @param {string} id - The ID of the job to retrieve
    * @returns {Promise<JobData<Payload, QueueName, JobName> | null>} The job data or null if not found
    */
-  async getJob<JobName extends JobNames<Payload, QueueName>>(
+  public async getJob<JobName extends JobNames<Payload, QueueName>>(
     id?: string,
   ): Promise<JobData<Payload, QueueName, JobName> | null> {
     try {
@@ -76,7 +78,7 @@ export class RedisClient<
    * @param {string} key - The hash key
    * @returns {Promise<JobData<Payload, QueueName, JobName> | null>} The hash fields and values or null if not found
    */
-  async getJobData<
+  public async getJobData<
     JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
   >(key: string): Promise<JobData<Payload, QueueName, JobName> | null> {
     try {
@@ -127,7 +129,7 @@ export class RedisClient<
    * @param {string} key - The list key
    * @returns {Promise<number>} The length of the list
    */
-  async lLen(key: string): Promise<number> {
+  public async lLen(key: string): Promise<number> {
     return await this.executeWithRetry(
       async () =>
         await this.getRedisClient().then(
@@ -144,7 +146,7 @@ export class RedisClient<
    * @param {JobNames<Payload, QueueName>} [jobName] - The name of the job to pop
    * @returns {Promise<string | null>} The popped value or null if the list is empty
    */
-  async pop(
+  public async pop(
     key: string,
     jobId: JobId,
     jobName?: JobNames<Payload, QueueName>,
@@ -169,7 +171,7 @@ export class RedisClient<
    * @param {string} jobName - The job name to find
    * @returns {Promise<string | null>} The job ID or null if not found
    */
-  async findJobByName(
+  public async findJobByName(
     listKey: string,
     jobId: JobId,
     jobName: string,
@@ -201,7 +203,7 @@ export class RedisClient<
    * @param {string} jobName - The job name to find and pop
    * @returns {Promise<string | null>} The job ID or null if not found
    */
-  async popByName(
+  public async popByName(
     listKey: string,
     jobId: JobId,
     jobName: string,
@@ -228,7 +230,7 @@ export class RedisClient<
    * @param {(multi: ReturnType<RedisClientType['multi']>) => void} operations - Function that defines the operations to execute
    * @returns {Promise<unknown>} The result of the operations
    */
-  async executeMulti(
+  public async executeMulti(
     operations: (multi: ReturnType<RedisClientType['multi']>) => void,
   ): Promise<unknown> {
     return await this.executeWithRetry(async () => {
@@ -254,7 +256,7 @@ export class RedisClient<
    * @param {string} eventsKey - The queue key for events stream
    * @returns {Promise<void>}
    */
-  async saveJob(
+  public async saveJob(
     id: string,
     jobData: JobData,
     waitingKey: string,
@@ -277,7 +279,7 @@ export class RedisClient<
    * @param {string} consumerName - The consumer name within the group
    * @returns {Promise<Array<{name: string; messages: Array<{id: string; message: RedisStreamEvents}>}> | null>} The stream messages or null if none available
    */
-  async listen(
+  public async listen(
     eventsKey: string,
     groupName: string,
     consumerName: string,
@@ -347,7 +349,7 @@ export class RedisClient<
    * @param {string} messageId - The message ID to acknowledge
    * @returns {Promise<void>}
    */
-  async ackMessage(
+  public async ackMessage(
     streamKey: string,
     groupName: string,
     messageId: string,
@@ -372,7 +374,7 @@ export class RedisClient<
    * @param {JobId} [jobId] - The job ID to move
    * @returns {Promise<void>}
    */
-  async moveJob<
+  public async moveJob<
     JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
   >(
     id: string,
@@ -386,7 +388,7 @@ export class RedisClient<
     },
     jobId: JobId,
   ): Promise<void> {
-    if (jobId && !jobId?.isValid(id)) {
+    if (!jobId.isValid(id)) {
       throw new Error(`Invalid job ID format: ${id}`);
     }
 
@@ -421,7 +423,7 @@ export class RedisClient<
    * @param {number} concurrency - The concurrency limit
    * @returns {Promise<object>} Queue statistics
    */
-  async getQueueStats(
+  public async getQueueStats(
     keys: KeysMap<Payload, QueueName>,
     queueName: QueueName,
     concurrency: number,
@@ -462,7 +464,7 @@ export class RedisClient<
    * @param {number} progress - The progress value
    * @returns {Promise<void>}
    */
-  async setJobProgress(id: string, progress: number): Promise<void> {
+  public async setJobProgress(id: string, progress: number): Promise<void> {
     await this.executeWithRetry(async () => {
       const client = await this.getRedisClient();
 
@@ -512,6 +514,7 @@ export class RedisClient<
     while (attempts < this.maxRetries) {
       try {
         // eslint-disable-next-line no-await-in-loop
+        // biome-ignore lint/performance/noAwaitInLoops: retries happen sequentially to honor backoff delays
         const result = await operation();
 
         this.resetErrorCount();
@@ -530,7 +533,6 @@ export class RedisClient<
 
         const delay = this.calculateBackoffDelay();
 
-        // eslint-disable-next-line no-await-in-loop
         await sleep(delay);
       }
     }

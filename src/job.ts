@@ -1,4 +1,3 @@
-import type { JobId } from './job-id';
 import type { Queue } from './queue';
 import type { RedisClient } from './redis-client';
 import type { JobConfig, JobData, JobState } from './types/job';
@@ -75,17 +74,15 @@ export class Job<
   public readonly payload: Payload[QueueName][JobName];
 
   private readonly queue: Queue<Payload, QueueName>;
-  private readonly jobId: JobId;
   private readonly redisClient: RedisClient<Payload, QueueName>;
 
   /**
    * Creates a new Job instance
    * @param {object} config - The job configuration
    */
-  constructor(config: JobConfig<Payload, QueueName, JobName>) {
+  public constructor(config: JobConfig<Payload, QueueName, JobName>) {
     this.name = config.name;
     this.queue = config.queue;
-    this.jobId = config.queue.jobId;
     this.payload = config.payload;
     this.redisClient = config.queue.redisClient;
 
@@ -96,7 +93,7 @@ export class Job<
     this.createdAt = config.createdAt ?? now;
     this.updatedAt = config.updatedAt ?? now;
 
-    this.id = config.id ?? this.jobId.generate(this.name);
+    this.id = config.id ?? this.queue.jobId.generate(this.name);
   }
 
   /**
@@ -106,28 +103,28 @@ export class Job<
    * @param {string} id - The id of the job to unpack
    * @returns {Promise<Job<T, U, JobNames<T, U>> | null>} The unpacked job or null if not found
    */
-  static async unpack<
-    Payload extends PayloadSchema,
-    QueueName extends QueueNames<Payload>,
-    JobName extends JobNames<Payload, QueueName>,
+  public static async unpack<
+    UnpackPayload extends PayloadSchema,
+    UnpackQueueName extends QueueNames<UnpackPayload>,
+    UnpackJobName extends JobNames<UnpackPayload, UnpackQueueName>,
   >(
-    queue: Queue<Payload, QueueName>,
+    queue: Queue<UnpackPayload, UnpackQueueName>,
     id: string,
-  ): Promise<Job<Payload, QueueName, JobName> | null> {
+  ): Promise<Job<UnpackPayload, UnpackQueueName, UnpackJobName> | null> {
     if (!queue.jobId.isValid(id)) {
       throw new Error(`Invalid job ID format: ${id}`);
     }
 
-    const jobData = await queue.redisClient.getJobData<JobName>(id);
+    const jobData = await queue.redisClient.getJobData<UnpackJobName>(id);
 
     if (!jobData) {
       return null;
     }
 
-    return new Job<Payload, QueueName, JobName>({
+    return new Job<UnpackPayload, UnpackQueueName, UnpackJobName>({
       queue,
       name: jobData.name,
-      payload: jobData.payload as Payload[QueueName][JobName],
+      payload: jobData.payload as UnpackPayload[UnpackQueueName][UnpackJobName],
       state: jobData.state,
       id,
       createdAt: jobData.createdAt,
@@ -141,7 +138,7 @@ export class Job<
    * @returns {Job<any, any, any>} A new Job instance with the updated state
    * @throws {Error} If the job doesn't have an id
    */
-  withState(state: JobState): Job<Payload, QueueName, JobName> {
+  public withState(state: JobState): Job<Payload, QueueName, JobName> {
     const job = new Job<Payload, QueueName, JobName>({
       queue: this.queue,
       name: this.name,
@@ -168,7 +165,7 @@ export class Job<
    * Saves the job to Redis and adds it to the waiting queue
    * @returns {Promise<Job<any, any, any>>} A new Job instance with an id and waiting state
    */
-  save = async (): Promise<Job<Payload, QueueName, JobName>> => {
+  public save = async (): Promise<Job<Payload, QueueName, JobName>> => {
     try {
       const savedJob = new Job<Payload, QueueName, JobName>({
         queue: this.queue,
@@ -200,7 +197,9 @@ export class Job<
    * @param {JobState} state - The new state to move the job to
    * @returns {Promise<Job<any, any, any>>} A new Job instance with the updated state
    */
-  move = async (state: JobState): Promise<Job<Payload, QueueName, JobName>> => {
+  public move = async (
+    state: JobState,
+  ): Promise<Job<Payload, QueueName, JobName>> => {
     try {
       if (this.state === state) {
         return this;
@@ -237,7 +236,7 @@ export class Job<
    * Prepares the job data for storage in Redis
    * @returns {JobData} The job data ready for storage
    */
-  prepare = (): JobData => {
+  public prepare = (): JobData => {
     return {
       name: this.name,
       payload: JSON.stringify(this.payload),

@@ -20,6 +20,7 @@ export class Queue<
   Payload extends PayloadSchema,
   QueueName extends QueueNames<Payload> = QueueNames<Payload>,
 > {
+  public readonly name: QueueName;
   public readonly keys: KeysMap<Payload, QueueName>;
   public readonly redisClient: RedisClient<Payload, QueueName>;
   public readonly jobId: JobId;
@@ -27,7 +28,6 @@ export class Queue<
   private readonly concurrency: number;
   private readonly groupName: string;
   private readonly consumerName: string;
-  private readonly id: string;
   private isListening = false;
 
   /**
@@ -36,19 +36,20 @@ export class Queue<
    * @param {() => Promise<RedisClientType>} getRedisClient - Function to get a Redis client
    * @param {QueueOptions} [options] - Optional configuration options
    */
-  constructor(
-    public readonly name: QueueName,
+  public constructor(
+    name: QueueName,
     getRedisClient: () => Promise<RedisClientType>,
     options?: QueueOptions,
   ) {
+    this.name = name;
     this.keys = getKeysMap<Payload, QueueName>(name);
     this.concurrency = options?.concurrency ?? -1;
     this.redisClient = new RedisClient(getRedisClient, options);
-    this.id = uuid();
+    const consumerId = uuid();
 
     this.jobId = new JobId(':', this.name);
     this.groupName = `${this.name}:events`;
-    this.consumerName = `${this.name}:${this.id}`;
+    this.consumerName = `${this.name}:${consumerId}`;
   }
 
   /**
@@ -58,7 +59,7 @@ export class Queue<
    * @param {Payload[QueueName][JobName]} payload - The job payload
    * @returns {Promise<Job>} The created job
    */
-  add = async <JobName extends JobNames<Payload, QueueName>>(
+  public add = async <JobName extends JobNames<Payload, QueueName>>(
     jobName: JobName,
     payload: Payload[QueueName][JobName],
   ): Promise<Job<Payload, QueueName, JobName>> => {
@@ -77,7 +78,7 @@ export class Queue<
    * @param {string} id - The id of the job to get
    * @returns {Promise<Job<Payload, QueueName, JobName> | null>} The job or null if not found
    */
-  get = async <
+  public get = async <
     JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
   >(
     id: string,
@@ -90,10 +91,11 @@ export class Queue<
    * @param {string} [jobName] - Optional job name to filter events by
    * @yields {JobEvent} The job events from the queue
    */
-  async *listen(jobName?: string): AsyncGenerator<JobEvent> {
+  public async *listen(jobName?: string): AsyncGenerator<JobEvent> {
     this.isListening = true;
 
     while (this.isListening) {
+      // biome-ignore lint/performance/noAwaitInLoops: sequential polling keeps ordering predictable
       const response = await this.redisClient.listen(
         this.keys.events,
         this.groupName,
@@ -121,7 +123,7 @@ export class Queue<
    * @template QueueStats - The queue name type
    * @returns {Promise<QueueStats>} The current queue statistics
    */
-  async getStats(): Promise<{
+  public async getStats(): Promise<{
     waiting: number;
     active: number;
     completed: number;
@@ -148,7 +150,7 @@ export class Queue<
    * @param {Function} fn - The function to process jobs
    * @param {JobName} [jobName] - Optional job name to process only specific jobs
    */
-  async process<JobName extends JobNames<Payload, QueueName>>(
+  public async process<JobName extends JobNames<Payload, QueueName>>(
     fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
     { jobName, jobId }: { jobName?: JobName; jobId?: string },
   ): Promise<void> {
@@ -175,7 +177,7 @@ export class Queue<
    * @param {Function} fn - The function to process jobs
    * @param {JobName} [jobName] - Optional job name to process only specific jobs
    */
-  async stream<JobName extends JobNames<Payload, QueueName>>(
+  public async stream<JobName extends JobNames<Payload, QueueName>>(
     fn: (job: Job<Payload, QueueName, JobName>) => Promise<void>,
     jobName?: JobName,
   ): Promise<void> {
@@ -305,7 +307,10 @@ export class Queue<
    * @returns {boolean} Whether the job matches the filter
    * @private
    */
-  private checkJobFilter = (jobId: string, jobName: string): boolean => {
+  private readonly checkJobFilter = (
+    jobId: string,
+    jobName: string,
+  ): boolean => {
     if (!jobName) {
       return true;
     }

@@ -7,7 +7,7 @@ type SerializableValue =
   | { [key: string]: SerializableValue };
 
 export type PayloadSchema = {
-  [key: string]: { [key: string]: SerializableValue };
+  [queueName: string]: { [jobName: string]: SerializableValue };
 };
 
 export type QueueNames<Payload extends PayloadSchema> = keyof Payload & string;
