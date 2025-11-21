@@ -23,7 +23,7 @@ export class JobId {
    */
   private readonly regexp: RegExp;
 
-  constructor(separator?: string, prefix?: string) {
+  public constructor(separator?: string, prefix?: string) {
     this.separator = separator || ':';
     this.prefix = prefix || 'job';
 
@@ -53,7 +53,7 @@ export class JobId {
   public getJobName(id: string): string {
     const match = this.regexp.exec(id);
 
-    if (!match) {
+    if (!match?.[1]) {
       throw new Error(`Invalid job ID format: ${id}`);
     }
 
@@ -78,7 +78,7 @@ export class JobId {
   public getUuid(id: string): string {
     const match = this.regexp.exec(id);
 
-    if (!match) {
+    if (!match?.[2]) {
       throw new Error(`Invalid job ID format: ${id}`);
     }
 

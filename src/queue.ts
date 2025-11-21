@@ -1,15 +1,15 @@
 /* eslint-disable no-await-in-loop */
 import { v4 as uuid } from 'uuid';
 import { Job } from './job';
-import { getKeysMap } from './types/keys';
-import { RedisClient } from './redis-client';
 import { JobId } from './job-id';
+import { RedisClient } from './redis-client';
+import { getKeysMap } from './types/keys';
 import type { RedisClientType } from 'redis';
+import type { JobEvent, RedisStreamEvents } from './types/events';
+import type { JobData } from './types/job';
 import type { KeysMap } from './types/keys';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
 import type { QueueOptions } from './types/queue';
-import type { JobData } from './types/job';
-import type { JobEvent, RedisStreamEvents } from './types/events';
 
 /**
  * Queue class for managing job processing
@@ -100,7 +100,9 @@ export class Queue<
         this.consumerName,
       );
 
-      if (!response) continue;
+      if (!response) {
+        continue;
+      }
 
       const events = this.processStreamMessages(response);
 
@@ -152,7 +154,9 @@ export class Queue<
   ): Promise<void> {
     const job = await this.retrieveJob<JobName>({ jobId, jobName });
 
-    if (!job) return;
+    if (!job) {
+      return;
+    }
 
     try {
       await fn(job);
@@ -212,12 +216,12 @@ export class Queue<
         message: RedisStreamEvents;
       }>;
     }>,
-  ): JobEvent[] {
+  ): Array<JobEvent> {
     if (!this.isListening) {
       return [];
     }
 
-    const events: JobEvent[] = [];
+    const events: Array<JobEvent> = [];
 
     for (const { messages } of response) {
       for (const { id, message } of messages) {
@@ -261,11 +265,15 @@ export class Queue<
         }
       }
 
-      if (!id) return null;
+      if (!id) {
+        return null;
+      }
 
       const jobData = await this.redisClient.getJobData<JobName>(id);
 
-      if (!jobData) return null;
+      if (!jobData) {
+        return null;
+      }
 
       const job = this.createJob<JobName>(jobData, 'active', id);
 
@@ -298,7 +306,9 @@ export class Queue<
    * @private
    */
   private checkJobFilter = (jobId: string, jobName: string): boolean => {
-    if (!jobName) return true;
+    if (!jobName) {
+      return true;
+    }
 
     try {
       const name = this.jobId.getJobName(jobId);

@@ -3,7 +3,7 @@ type SerializableValue =
   | number
   | boolean
   | null
-  | SerializableValue[]
+  | Array<SerializableValue>
   | { [key: string]: SerializableValue };
 
 export type PayloadSchema = {

@@ -1,10 +1,10 @@
 import { sleep } from './lib/sleep';
-import type { JobId } from './job-id';
 import type { RedisClientType } from 'redis';
+import type { JobId } from './job-id';
+import type { RedisStreamEvents } from './types/events';
 import type { JobData, JobState } from './types/job';
 import type { KeysMap } from './types/keys';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
-import type { RedisStreamEvents } from './types/events';
 import type { BackoffStrategy, RedisClientOptions } from './types/queue';
 
 const DEFAULT_RECONNECT_DELAY = 1000;
@@ -60,7 +60,9 @@ export class RedisClient<
     id?: string,
   ): Promise<JobData<Payload, QueueName, JobName> | null> {
     try {
-      if (!id) return null;
+      if (!id) {
+        return null;
+      }
 
       return await this.getJobData<JobName>(id);
     } catch (error) {
@@ -90,7 +92,7 @@ export class RedisClient<
         return null;
       }
 
-      if (!data.name || !data.payload || !data.queue || !data.state) {
+      if (!(data.name && data.payload && data.queue && data.state)) {
         throw new Error(`Invalid job data structure for key ${key}`);
       }
 
@@ -176,12 +178,16 @@ export class RedisClient<
       const client = await this.getRedisClient();
       const ids = await client.lRange(listKey, 0, -1);
 
-      if (ids.length === 0) return null;
+      if (ids.length === 0) {
+        return null;
+      }
 
       for (const id of ids) {
         const name = jobId?.getJobName(id);
 
-        if (name === jobName) return id;
+        if (name === jobName) {
+          return id;
+        }
       }
 
       return null;
@@ -202,7 +208,9 @@ export class RedisClient<
   ): Promise<string | null> {
     const id = await this.findJobByName(listKey, jobId, jobName);
 
-    if (!id) return null;
+    if (!id) {
+      return null;
+    }
 
     await this.executeWithRetry(
       async () =>

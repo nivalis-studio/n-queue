@@ -1,2 +1,2 @@
-export { Queue } from './queue';
 export { Job } from './job';
+export { Queue } from './queue';

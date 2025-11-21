@@ -62,7 +62,7 @@ export class Job<
   /**
    * Stacktrace for the error (for failed jobs).
    */
-  public stacktrace: string[] = [];
+  public stacktrace: Array<string> = [];
 
   /**
    * The reason for the job failing (for failed jobs).
@@ -120,7 +120,9 @@ export class Job<
 
     const jobData = await queue.redisClient.getJobData<JobName>(id);
 
-    if (!jobData) return null;
+    if (!jobData) {
+      return null;
+    }
 
     return new Job<Payload, QueueName, JobName>({
       queue,
@@ -200,7 +202,9 @@ export class Job<
    */
   move = async (state: JobState): Promise<Job<Payload, QueueName, JobName>> => {
     try {
-      if (this.state === state) return this;
+      if (this.state === state) {
+        return this;
+      }
 
       if (this.state === 'waiting' && state === 'active') {
         throw new Error(
