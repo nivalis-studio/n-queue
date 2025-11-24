@@ -5,6 +5,7 @@ A robust, Redis-backed job queue system with type safety, event handling, and st
 ## Features
 
 - 🎯 **Type-safe API**: Full TypeScript support with generic types for payloads and job names
+- ⚡ **Effect-powered core**: All queue orchestration now runs through Effect while keeping the familiar Promise-based facade
 - 💾 **Redis-backed**: Reliable persistence and atomic operations
 - 🔄 **Event Streaming**: Real-time job status updates and event handling
 - 🎚️ **Concurrency Control**: Fine-grained control over parallel job processing
@@ -92,6 +93,30 @@ emailQueue.on('saved', (jobId) => {
 emailQueue.on('completed', (jobId) => {
   console.log(`Job ${jobId} completed successfully`);
 });
+```
+
+## Effect Integration
+
+Internally every Redis call now runs through [Effect](https://effect.website/) so retries, backoff, and orchestration remain deterministic. Consumers can keep the familiar Promise-based API, but if you are already inside an `Effect` pipeline you can compose directly with the exposed helpers:
+
+```typescript
+import { Effect } from 'effect';
+import { Job, Queue } from '@nivalis/n-queue';
+
+const enqueueEmail = (queue: Queue<MyPayload, 'emailQueue'>) =>
+  Effect.gen(function* () {
+    const job = new Job({
+      queue,
+      name: 'sendEmail',
+      payload: {
+        to: 'user@example.com',
+        subject: 'Welcome',
+        body: '👋',
+      },
+    });
+
+    return yield* job.saveEffect();
+  });
 ```
 
 ## Architecture

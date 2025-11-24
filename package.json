@@ -29,6 +29,7 @@
 		"ts": "tsc --noEmit --incremental"
 	},
 	"dependencies": {
+		"effect": "catalog:",
 		"uuid": "catalog:"
 	},
 	"peerDependencies": {

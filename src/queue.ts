@@ -1,7 +1,9 @@
 /* eslint-disable no-await-in-loop */
+import { Effect } from 'effect';
 import { v4 as uuid } from 'uuid';
 import { Job } from './job';
 import { JobId } from './job-id';
+import { runEffect } from './lib/run-effect';
 import { RedisClient } from './redis-client';
 import { getKeysMap } from './types/keys';
 import type { RedisClientType } from 'redis';
@@ -63,14 +65,25 @@ export class Queue<
     jobName: JobName,
     payload: Payload[QueueName][JobName],
   ): Promise<Job<Payload, QueueName, JobName>> => {
-    const job = new Job<Payload, QueueName, JobName>({
-      queue: this,
-      name: jobName,
-      payload,
-    });
-
-    return await job.save();
+    return await runEffect(this.createAddEffect<JobName>(jobName, payload));
   };
+
+  private createAddEffect<JobName extends JobNames<Payload, QueueName>>(
+    jobName: JobName,
+    payload: Payload[QueueName][JobName],
+  ): Effect.Effect<Job<Payload, QueueName, JobName>, Error> {
+    const queue = this;
+
+    return Effect.gen(function* () {
+      const job = new Job<Payload, QueueName, JobName>({
+        queue,
+        name: jobName,
+        payload,
+      });
+
+      return yield* job.saveEffect();
+    });
+  }
 
   /**
    * Get a job by id
@@ -83,8 +96,14 @@ export class Queue<
   >(
     id: string,
   ): Promise<Job<Payload, QueueName, JobName> | null> => {
-    return await Job.unpack<Payload, QueueName, JobName>(this, id);
+    return await runEffect(this.createGetEffect<JobName>(id));
   };
+
+  private createGetEffect<
+    JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
+  >(id: string): Effect.Effect<Job<Payload, QueueName, JobName> | null, Error> {
+    return Job.unpackEffect<Payload, QueueName, JobName>(this, id);
+  }
 
   /**
    * Listen for job events from the queue
@@ -247,57 +266,66 @@ export class Queue<
     { jobId, jobName }: { jobId?: string; jobName?: JobName },
     fromState: 'waiting' | 'active' = 'waiting',
   ): Promise<Job<Payload, QueueName, JobName> | null> {
-    try {
-      let id = jobId;
+    return await runEffect(
+      this.retrieveJobEffect<JobName>({ jobId, jobName }, fromState),
+    );
+  }
 
-      if (fromState === 'waiting') {
-        const activeCount = await this.redisClient.lLen(this.keys.active);
+  private retrieveJobEffect<JobName extends JobNames<Payload, QueueName>>(
+    { jobId, jobName }: { jobId?: string; jobName?: JobName },
+    fromState: 'waiting' | 'active' = 'waiting',
+  ): Effect.Effect<Job<Payload, QueueName, JobName> | null, Error> {
+    return Effect.tryPromise({
+      try: async () => {
+        let id = jobId;
 
-        if (this.concurrency > 0 && activeCount >= this.concurrency) {
-          return null;
+        if (fromState === 'waiting') {
+          const activeCount = await this.redisClient.lLen(this.keys.active);
+
+          if (this.concurrency > 0 && activeCount >= this.concurrency) {
+            return null;
+          }
+
+          if (!id) {
+            id =
+              (await this.redisClient.pop(
+                this.keys.waiting,
+                this.jobId,
+                jobName,
+              )) ?? undefined;
+          }
         }
 
         if (!id) {
-          id =
-            (await this.redisClient.pop(
-              this.keys.waiting,
-              this.jobId,
-              jobName,
-            )) ?? undefined;
+          return null;
         }
-      }
 
-      if (!id) {
-        return null;
-      }
+        const jobData = await this.redisClient.getJobData<JobName>(id);
 
-      const jobData = await this.redisClient.getJobData<JobName>(id);
+        if (!jobData) {
+          return null;
+        }
 
-      if (!jobData) {
-        return null;
-      }
+        const job = this.createJob<JobName>(jobData, 'active', id);
 
-      const job = this.createJob<JobName>(jobData, 'active', id);
+        await this.redisClient.moveJob(
+          id,
+          job.prepare(),
+          {
+            from: this.keys[fromState],
+            to: this.keys.active,
+          },
+          this.jobId,
+        );
 
-      await this.redisClient.moveJob(
-        id,
-        job.prepare(),
-        {
-          from: this.keys[fromState],
-          to: this.keys.active,
-        },
-        this.jobId,
-      );
-
-      return job;
-    } catch (error) {
-      const idStr = jobId ?? '';
-
-      throw new Error(
-        `Failed to retrieve job${idStr} from ${fromState} state`,
-        { cause: error },
-      );
-    }
+        return job;
+      },
+      catch: error =>
+        new Error(
+          `Failed to retrieve job${jobId ?? ''} from ${fromState} state`,
+          { cause: error },
+        ),
+    });
   }
 
   /**

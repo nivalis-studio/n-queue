@@ -1,3 +1,5 @@
+import { Effect } from 'effect';
+import { runEffect } from './lib/run-effect';
 import type { Queue } from './queue';
 import type { RedisClient } from './redis-client';
 import type { JobConfig, JobData, JobState } from './types/job';
@@ -103,6 +105,47 @@ export class Job<
    * @param {string} id - The id of the job to unpack
    * @returns {Promise<Job<T, U, JobNames<T, U>> | null>} The unpacked job or null if not found
    */
+  public static unpackEffect<
+    UnpackPayload extends PayloadSchema,
+    UnpackQueueName extends QueueNames<UnpackPayload>,
+    UnpackJobName extends JobNames<UnpackPayload, UnpackQueueName>,
+  >(
+    queue: Queue<UnpackPayload, UnpackQueueName>,
+    id: string,
+  ): Effect.Effect<
+    Job<UnpackPayload, UnpackQueueName, UnpackJobName> | null,
+    Error
+  > {
+    if (!queue.jobId.isValid(id)) {
+      return Effect.fail(new Error(`Invalid job ID format: ${id}`));
+    }
+
+    return Effect.tryPromise({
+      try: async () => {
+        const jobData = await queue.redisClient.getJobData<UnpackJobName>(id);
+
+        if (!jobData) {
+          return null;
+        }
+
+        return new Job<UnpackPayload, UnpackQueueName, UnpackJobName>({
+          queue,
+          name: jobData.name,
+          payload:
+            jobData.payload as UnpackPayload[UnpackQueueName][UnpackJobName],
+          state: jobData.state,
+          id,
+          createdAt: jobData.createdAt,
+          updatedAt: jobData.updatedAt,
+        });
+      },
+      catch: error =>
+        new Error(`Failed to unpack job ${id}`, {
+          cause: error,
+        }),
+    });
+  }
+
   public static async unpack<
     UnpackPayload extends PayloadSchema,
     UnpackQueueName extends QueueNames<UnpackPayload>,
@@ -111,25 +154,12 @@ export class Job<
     queue: Queue<UnpackPayload, UnpackQueueName>,
     id: string,
   ): Promise<Job<UnpackPayload, UnpackQueueName, UnpackJobName> | null> {
-    if (!queue.jobId.isValid(id)) {
-      throw new Error(`Invalid job ID format: ${id}`);
-    }
-
-    const jobData = await queue.redisClient.getJobData<UnpackJobName>(id);
-
-    if (!jobData) {
-      return null;
-    }
-
-    return new Job<UnpackPayload, UnpackQueueName, UnpackJobName>({
-      queue,
-      name: jobData.name,
-      payload: jobData.payload as UnpackPayload[UnpackQueueName][UnpackJobName],
-      state: jobData.state,
-      id,
-      createdAt: jobData.createdAt,
-      updatedAt: jobData.updatedAt,
-    });
+    return await runEffect(
+      Job.unpackEffect<UnpackPayload, UnpackQueueName, UnpackJobName>(
+        queue,
+        id,
+      ),
+    );
   }
 
   /**
@@ -163,73 +193,90 @@ export class Job<
 
   /**
    * Saves the job to Redis and adds it to the waiting queue
-   * @returns {Promise<Job<any, any, any>>} A new Job instance with an id and waiting state
+   * @returns {Effect<Job<any, any, any>, Error>} Job persisted and ready for processing
    */
+  public readonly saveEffect = (): Effect.Effect<
+    Job<Payload, QueueName, JobName>,
+    Error
+  > => {
+    return Effect.tryPromise({
+      try: async () => {
+        const savedJob = new Job<Payload, QueueName, JobName>({
+          queue: this.queue,
+          name: this.name,
+          payload: this.payload,
+          state: 'waiting',
+          id: this.id,
+          createdAt: this.createdAt,
+          updatedAt: Date.now().toString(),
+        });
+
+        await this.redisClient.saveJob(
+          this.id,
+          savedJob.prepare(),
+          this.queue.keys.waiting,
+          this.queue.keys.events,
+        );
+
+        return savedJob;
+      },
+      catch: error =>
+        new Error('Failed to save job', {
+          cause: error,
+        }),
+    });
+  };
+
   public save = async (): Promise<Job<Payload, QueueName, JobName>> => {
-    try {
-      const savedJob = new Job<Payload, QueueName, JobName>({
-        queue: this.queue,
-        name: this.name,
-        payload: this.payload,
-        state: 'waiting',
-        id: this.id,
-        createdAt: this.createdAt,
-        updatedAt: Date.now().toString(),
-      });
-
-      await this.redisClient.saveJob(
-        this.id,
-        savedJob.prepare(),
-        this.queue.keys.waiting,
-        this.queue.keys.events,
-      );
-
-      return savedJob;
-    } catch (error) {
-      throw new Error('Failed to save job', {
-        cause: error,
-      });
-    }
+    return await runEffect(this.saveEffect());
   };
 
   /**
    * Moves the job to a different state
    * @param {JobState} state - The new state to move the job to
-   * @returns {Promise<Job<any, any, any>>} A new Job instance with the updated state
+   * @returns {Effect<Job<any, any, any>, Error>} Job with the updated state
    */
+  public moveEffect = (
+    state: JobState,
+  ): Effect.Effect<Job<Payload, QueueName, JobName>, Error> => {
+    return Effect.tryPromise({
+      try: async () => {
+        if (this.state === state) {
+          return this;
+        }
+
+        if (this.state === 'waiting' && state === 'active') {
+          throw new Error(
+            'Cannot move job to active state from waiting state, use queue.process() instead',
+          );
+        }
+
+        const oldState = this.state;
+        const newJob = this.withState(state);
+
+        await this.redisClient.moveJob(
+          this.id,
+          newJob.prepare(),
+          {
+            from: this.queue.keys[oldState],
+            to: this.queue.keys[state],
+          },
+          this.queue.jobId,
+        );
+
+        return newJob;
+      },
+      catch: error =>
+        new Error(`Failed to move job to state ${state}`, {
+          cause: error,
+        }),
+    });
+  };
+
   public move = async (
     state: JobState,
   ): Promise<Job<Payload, QueueName, JobName>> => {
-    try {
-      if (this.state === state) {
-        return this;
-      }
-
-      if (this.state === 'waiting' && state === 'active') {
-        throw new Error(
-          'Cannot move job to active state from waiting state, use queue.process() instead',
-        );
-      }
-
-      const oldState = this.state;
-      const newJob = this.withState(state);
-
-      await this.redisClient.moveJob(
-        this.id,
-        newJob.prepare(),
-        {
-          from: this.queue.keys[oldState],
-          to: this.queue.keys[state],
-        },
-        this.queue.jobId,
-      );
-
-      return newJob;
-    } catch (error) {
-      throw new Error(`Failed to move job to state ${state}`, {
-        cause: error,
-      });
-    }
+    return await runEffect(this.moveEffect(state));
   };
 
   /**

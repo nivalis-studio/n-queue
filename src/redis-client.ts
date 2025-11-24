@@ -1,4 +1,4 @@
-import { sleep } from './lib/sleep';
+import { Duration, Effect, Schedule } from 'effect';
 import type { RedisClientType } from 'redis';
 import type { JobId } from './job-id';
 import type { RedisStreamEvents } from './types/events';
@@ -24,6 +24,11 @@ export class RedisClient<
   private readonly getClient: () => Promise<RedisClientType>;
   private readonly maxRetries: number;
   private readonly backoffStrategy: BackoffStrategy;
+  private readonly retrySchedule: Schedule.Schedule<
+    unknown,
+    unknown,
+    never
+  > | null;
   private consecutiveErrors = 0;
 
   /**
@@ -42,6 +47,7 @@ export class RedisClient<
       maxDelay: MAX_RECONNECT_DELAY,
       factor: EXPONENTIAL_BACKOFF_BASE,
     };
+    this.retrySchedule = this.maxRetries > 1 ? this.buildRetrySchedule() : null;
   }
 
   /**
@@ -336,7 +342,7 @@ export class RedisClient<
 
       const delay = this.calculateBackoffDelay();
 
-      await sleep(delay);
+      await Effect.runPromise(Effect.sleep(Duration.millis(delay)));
 
       return null;
     }
@@ -475,6 +481,27 @@ export class RedisClient<
     }, 'setJobProgress');
   }
 
+  private buildRetrySchedule(): Schedule.Schedule<unknown, unknown, never> {
+    const base = Schedule.exponential(
+      Duration.millis(this.backoffStrategy.initialDelay),
+      this.backoffStrategy.factor,
+    ).pipe(
+      Schedule.modifyDelay((_, duration) =>
+        Duration.millis(
+          Math.min(Duration.toMillis(duration), this.backoffStrategy.maxDelay),
+        ),
+      ),
+    );
+
+    const attempts = Math.max(0, this.maxRetries - 1);
+
+    if (attempts <= 0) {
+      return base as Schedule.Schedule<unknown, unknown, never>;
+    }
+
+    return Schedule.intersect(base, Schedule.recurs(attempts));
+  }
+
   /**
    * Calculate backoff delay based on consecutive errors
    * @returns {number} The calculated delay in milliseconds
@@ -509,34 +536,27 @@ export class RedisClient<
     operation: () => Promise<T>,
     context: string,
   ): Promise<T> {
-    let attempts = 0;
+    const effect = Effect.tryPromise({
+      try: operation,
+      catch: error =>
+        new Error(
+          `Failed to execute operation (${context}) after ${this.maxRetries} attempts`,
+          { cause: error },
+        ),
+    }).pipe(
+      Effect.tap(() => Effect.sync(() => this.resetErrorCount())),
+      Effect.tapError(() =>
+        Effect.sync(() => {
+          this.consecutiveErrors += 1;
+        }),
+      ),
+    );
 
-    while (attempts < this.maxRetries) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        // biome-ignore lint/performance/noAwaitInLoops: retries happen sequentially to honor backoff delays
-        const result = await operation();
+    const scheduled =
+      this.retrySchedule === null
+        ? effect
+        : Effect.retry(effect, { schedule: this.retrySchedule });
 
-        this.resetErrorCount();
-
-        return result;
-      } catch (error) {
-        attempts += 1;
-        this.consecutiveErrors += 1;
-
-        if (attempts === this.maxRetries) {
-          throw new Error(
-            `Failed to execute operation (${context}) after ${this.maxRetries} attempts`,
-            { cause: error },
-          );
-        }
-
-        const delay = this.calculateBackoffDelay();
-
-        await sleep(delay);
-      }
-    }
-
-    throw new Error(`Unexpected retry loop exit for operation: ${context}`);
+    return await Effect.runPromise(scheduled);
   }
 }
