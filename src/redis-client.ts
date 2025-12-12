@@ -5,7 +5,11 @@ import type { RedisStreamEvents } from './types/events';
 import type { JobData, JobState } from './types/job';
 import type { KeysMap } from './types/keys';
 import type { JobNames, PayloadSchema, QueueNames } from './types/payload';
-import type { BackoffStrategy, RedisClientOptions } from './types/queue';
+import type {
+  BackoffStrategy,
+  QueueLogger,
+  RedisClientOptions,
+} from './types/queue';
 
 const DEFAULT_RECONNECT_DELAY = 1000;
 const EXPONENTIAL_BACKOFF_BASE = 2;
@@ -29,6 +33,7 @@ export class RedisClient<
     unknown,
     never
   > | null;
+  private readonly logger?: QueueLogger;
   private consecutiveErrors = 0;
 
   /**
@@ -48,6 +53,7 @@ export class RedisClient<
       factor: EXPONENTIAL_BACKOFF_BASE,
     };
     this.retrySchedule = this.maxRetries > 1 ? this.buildRetrySchedule() : null;
+    this.logger = options?.logger;
   }
 
   /**
@@ -62,81 +68,91 @@ export class RedisClient<
    * Get a specific job by ID
    * @template JobName - The job name type extending JobNames<Payload, QueueName>
    * @param {string} id - The ID of the job to retrieve
-   * @returns {Promise<JobData<Payload, QueueName, JobName> | null>} The job data or null if not found
+   * @returns {Effect<JobData | null, Error>} The job data or null if not found
    */
-  public async getJob<JobName extends JobNames<Payload, QueueName>>(
+  public getJob<JobName extends JobNames<Payload, QueueName>>(
     id?: string,
-  ): Promise<JobData<Payload, QueueName, JobName> | null> {
-    try {
-      if (!id) {
-        return null;
-      }
-
-      return await this.getJobData<JobName>(id);
-    } catch (error) {
-      throw new Error('Failed to get job from queue', { cause: error });
+  ): Effect.Effect<JobData<Payload, QueueName, JobName> | null, Error> {
+    if (!id) {
+      return Effect.succeed(null);
     }
+
+    return this.getJobData<JobName>(id).pipe(
+      Effect.catchAll(error =>
+        Effect.fail(
+          new Error('Failed to get job from queue', { cause: error }),
+        ),
+      ),
+    );
   }
 
   /**
    * Get all fields and values from a hash
    * @template JobName - The job name type
    * @param {string} key - The hash key
-   * @returns {Promise<JobData<Payload, QueueName, JobName> | null>} The hash fields and values or null if not found
+   * @returns {Effect<JobData | null, Error>} The hash fields and values or null if not found
    */
-  public async getJobData<
+  public getJobData<
     JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
-  >(key: string): Promise<JobData<Payload, QueueName, JobName> | null> {
-    try {
-      const data = await this.executeWithRetry(
-        async () =>
-          await this.getRedisClient().then(
-            async client => await client.hGetAll(key),
-          ),
-        `getJobData(${key})`,
-      );
+  >(
+    key: string,
+  ): Effect.Effect<JobData<Payload, QueueName, JobName> | null, Error> {
+    return this.executeWithRetry(
+      async () =>
+        await this.getRedisClient().then(
+          async client => await client.hGetAll(key),
+        ),
+      `getJobData(${key})`,
+    ).pipe(
+      Effect.flatMap(data => {
+        if (!data || Object.keys(data).length === 0) {
+          return Effect.succeed(null);
+        }
 
-      if (!data || Object.keys(data).length === 0) {
-        return null;
-      }
+        const payload = data.payload;
 
-      if (!(data.name && data.payload && data.queue && data.state)) {
-        throw new Error(`Invalid job data structure for key ${key}`);
-      }
+        if (!(data.name && payload && data.queue && data.state)) {
+          return Effect.fail(
+            new Error(`Invalid job data structure for key ${key}`),
+          );
+        }
 
-      try {
-        const parsedPayload = JSON.parse(data.payload);
-
-        return {
-          ...data,
-          payload: parsedPayload,
-        } as unknown as JobData<Payload, QueueName, JobName>;
-      } catch (error) {
-        throw new Error(`Failed to parse job payload for key ${key}`, {
-          cause: error,
+        return Effect.try({
+          try: () =>
+            ({
+              ...data,
+              payload: JSON.parse(payload),
+            }) as unknown as JobData<Payload, QueueName, JobName>,
+          catch: error =>
+            new Error(`Failed to parse job payload for key ${key}`, {
+              cause: error,
+            }),
         });
-      }
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('Invalid job data')
-      ) {
-        throw error;
-      }
+      }),
+      Effect.catchAll(error => {
+        if (
+          error instanceof Error &&
+          error.message.includes('Invalid job data structure')
+        ) {
+          return Effect.fail(error);
+        }
 
-      throw new Error(`Failed to get job data for key ${key}`, {
-        cause: error,
-      });
-    }
+        return Effect.fail(
+          new Error(`Failed to get job data for key ${key}`, {
+            cause: error,
+          }),
+        );
+      }),
+    );
   }
 
   /**
    * Get the length of a list
    * @param {string} key - The list key
-   * @returns {Promise<number>} The length of the list
+   * @returns {Effect<number, Error>} The length of the list
    */
-  public async lLen(key: string): Promise<number> {
-    return await this.executeWithRetry(
+  public lLen(key: string): Effect.Effect<number, Error> {
+    return this.executeWithRetry(
       async () =>
         await this.getRedisClient().then(
           async client => await client.lLen(key),
@@ -150,18 +166,18 @@ export class RedisClient<
    * @param {string} key - The list key
    * @param {object} jobId - The job ID to pop
    * @param {JobNames<Payload, QueueName>} [jobName] - The name of the job to pop
-   * @returns {Promise<string | null>} The popped value or null if the list is empty
+   * @returns {Effect<string | null, Error>} The popped value or null if the list is empty
    */
-  public async pop(
+  public pop(
     key: string,
     jobId: JobId,
     jobName?: JobNames<Payload, QueueName>,
-  ): Promise<string | null> {
+  ): Effect.Effect<string | null, Error> {
     if (jobName) {
-      return await this.popByName(key, jobId, jobName);
+      return this.popByName(key, jobId, jobName);
     }
 
-    return await this.executeWithRetry(
+    return this.executeWithRetry(
       async () =>
         await this.getRedisClient().then(
           async client => await client.rPop(key),
@@ -175,14 +191,14 @@ export class RedisClient<
    * @param {string} listKey - The list key
    * @param {JobId} jobId - The job ID to find
    * @param {string} jobName - The job name to find
-   * @returns {Promise<string | null>} The job ID or null if not found
+   * @returns {Effect<string | null, Error>} The job ID or null if not found
    */
-  public async findJobByName(
+  public findJobByName(
     listKey: string,
     jobId: JobId,
     jobName: string,
-  ): Promise<string | null> {
-    return await this.executeWithRetry(async () => {
+  ): Effect.Effect<string | null, Error> {
+    return this.executeWithRetry(async () => {
       const client = await this.getRedisClient();
       const ids = await client.lRange(listKey, 0, -1);
 
@@ -207,39 +223,43 @@ export class RedisClient<
    * @param {string} listKey - The list key
    * @param {JobId} jobId - The job ID to find
    * @param {string} jobName - The job name to find and pop
-   * @returns {Promise<string | null>} The job ID or null if not found
+   * @returns {Effect<string | null, Error>} The job ID or null if not found
    */
-  public async popByName(
+  public popByName(
     listKey: string,
     jobId: JobId,
     jobName: string,
-  ): Promise<string | null> {
-    const id = await this.findJobByName(listKey, jobId, jobName);
+  ): Effect.Effect<string | null, Error> {
+    const client = this;
 
-    if (!id) {
-      return null;
-    }
+    return Effect.gen(function* () {
+      const id = yield* client.findJobByName(listKey, jobId, jobName);
 
-    await this.executeWithRetry(
-      async () =>
-        await this.getRedisClient().then(
-          async client => await client.lRem(listKey, 1, id),
-        ),
-      `popByName(${listKey}, ${jobName})`,
-    );
+      if (!id) {
+        return null;
+      }
 
-    return id;
+      yield* client.executeWithRetry(
+        async () =>
+          await client
+            .getRedisClient()
+            .then(async redis => await redis.lRem(listKey, 1, id)),
+        `popByName(${listKey}, ${jobName})`,
+      );
+
+      return id;
+    });
   }
 
   /**
    * Execute multiple Redis commands atomically
    * @param {(multi: ReturnType<RedisClientType['multi']>) => void} operations - Function that defines the operations to execute
-   * @returns {Promise<unknown>} The result of the operations
+   * @returns {Effect<unknown, Error>} The result of the operations
    */
-  public async executeMulti(
+  public executeMulti(
     operations: (multi: ReturnType<RedisClientType['multi']>) => void,
-  ): Promise<unknown> {
-    return await this.executeWithRetry(async () => {
+  ): Effect.Effect<unknown, Error> {
+    return this.executeWithRetry(async () => {
       const client = await this.getRedisClient();
       const multi = client.multi();
 
@@ -260,22 +280,22 @@ export class RedisClient<
    * @param {JobData} jobData - The job data
    * @param {string} waitingKey - The waiting queue key
    * @param {string} eventsKey - The queue key for events stream
-   * @returns {Promise<void>}
+   * @returns {Effect<void, Error>}
    */
-  public async saveJob(
+  public saveJob(
     id: string,
     jobData: JobData,
     waitingKey: string,
     eventsKey: string,
-  ): Promise<void> {
-    await this.executeMulti(multi => {
+  ): Effect.Effect<void, Error> {
+    return this.executeMulti(multi => {
       multi.hSet(id, jobData);
       multi.lPush(waitingKey, id);
       multi.xAdd(eventsKey, '*', {
         type: 'saved',
         id,
       } satisfies RedisStreamEvents);
-    });
+    }).pipe(Effect.asVoid);
   }
 
   /**
@@ -283,69 +303,84 @@ export class RedisClient<
    * @param {string} eventsKey - The stream key to listen to
    * @param {string} groupName - The consumer group name
    * @param {string} consumerName - The consumer name within the group
-   * @returns {Promise<Array<{name: string; messages: Array<{id: string; message: RedisStreamEvents}>}> | null>} The stream messages or null if none available
+   * @returns {Effect<Array<{name: string; messages: Array<{id: string; message: RedisStreamEvents}>}> | null, never>} The stream messages or null if none available
    */
-  public async listen(
+  public listen(
     eventsKey: string,
     groupName: string,
     consumerName: string,
-  ): Promise<Array<{
-    name: string;
-    messages: Array<{
-      id: string;
-      message: RedisStreamEvents;
-    }>;
-  }> | null> {
-    try {
-      const client = await this.getRedisClient();
+  ): Effect.Effect<
+    Array<{
+      name: string;
+      messages: Array<{
+        id: string;
+        message: RedisStreamEvents;
+      }>;
+    }> | null,
+    never
+  > {
+    const client = this;
 
-      try {
-        await client.xGroupCreate(eventsKey, groupName, '0', {
-          MKSTREAM: true,
-        });
-      } catch {
-        /* Ignore error if group already exists */
-      }
+    return Effect.tryPromise({
+      try: async () => {
+        const redis = await client.getRedisClient();
 
-      const response = await client.xReadGroup(
-        client.commandOptions({ isolated: true }),
-        groupName,
-        consumerName,
-        [{ key: eventsKey, id: '>' }],
-        {
-          COUNT: 1,
-          BLOCK: 5000,
-        },
-      );
+        try {
+          await redis.xGroupCreate(eventsKey, groupName, '0', {
+            MKSTREAM: true,
+          });
+        } catch {
+          /* Ignore error if group already exists */
+        }
 
-      if (!response) {
-        this.resetErrorCount();
+        const response = await redis.xReadGroup(
+          redis.commandOptions({ isolated: true }),
+          groupName,
+          consumerName,
+          [{ key: eventsKey, id: '>' }],
+          {
+            COUNT: 1,
+            BLOCK: 5000,
+          },
+        );
 
-        return null;
-      }
+        if (!response) {
+          client.resetErrorCount();
 
-      this.resetErrorCount();
+          return null;
+        }
 
-      return response.map(stream => ({
-        name: stream.name,
-        messages: stream.messages.map(msg => ({
-          id: msg.id,
-          message: msg.message as unknown as RedisStreamEvents,
-        })),
-      }));
-    } catch (error) {
-      this.consecutiveErrors += 1;
-      console.error(
-        `Error reading from stream (attempt ${this.consecutiveErrors}):`,
-        error,
-      );
+        client.resetErrorCount();
 
-      const delay = this.calculateBackoffDelay();
+        return response.map(stream => ({
+          name: stream.name,
+          messages: stream.messages.map(msg => ({
+            id: msg.id,
+            message: msg.message as unknown as RedisStreamEvents,
+          })),
+        }));
+      },
+      catch: error =>
+        error instanceof Error
+          ? error
+          : new Error('Stream error', { cause: error }),
+    }).pipe(
+      Effect.catchAll(error =>
+        Effect.gen(function* () {
+          client.consecutiveErrors += 1;
+          client.logger?.error?.(
+            `Error reading from stream (attempt ${client.consecutiveErrors})`,
+            { error },
+          );
 
-      await Effect.runPromise(Effect.sleep(Duration.millis(delay)));
+          const delay = client.calculateBackoffDelay();
 
-      return null;
-    }
+          yield* Effect.sleep(Duration.millis(delay));
+
+          return null;
+        }),
+      ),
+    );
   }
 
   /**
@@ -353,20 +388,20 @@ export class RedisClient<
    * @param {string} streamKey - The stream key
    * @param {string} groupName - The consumer group name
    * @param {string} messageId - The message ID to acknowledge
-   * @returns {Promise<void>}
+   * @returns {Effect<void, Error>}
    */
-  public async ackMessage(
+  public ackMessage(
     streamKey: string,
     groupName: string,
     messageId: string,
-  ): Promise<void> {
-    await this.executeWithRetry(
+  ): Effect.Effect<void, Error> {
+    return this.executeWithRetry(
       async () =>
         await this.getRedisClient().then(
           async client => await client.xAck(streamKey, groupName, messageId),
         ),
       `ackMessage(${streamKey}, ${groupName}, ${messageId})`,
-    );
+    ).pipe(Effect.asVoid);
   }
 
   /**
@@ -378,9 +413,9 @@ export class RedisClient<
    * @param {string} options.from - The source queue key
    * @param {string} options.to - The destination queue key
    * @param {JobId} [jobId] - The job ID to move
-   * @returns {Promise<void>}
+   * @returns {Effect<void, Error>}
    */
-  public async moveJob<
+  public moveJob<
     JobName extends JobNames<Payload, QueueName> = JobNames<Payload, QueueName>,
   >(
     id: string,
@@ -393,12 +428,12 @@ export class RedisClient<
       to: `${string}:${JobState}`;
     },
     jobId: JobId,
-  ): Promise<void> {
+  ): Effect.Effect<void, Error> {
     if (!jobId.isValid(id)) {
-      throw new Error(`Invalid job ID format: ${id}`);
+      return Effect.fail(new Error(`Invalid job ID format: ${id}`));
     }
 
-    await this.executeWithRetry(async () => {
+    return this.executeWithRetry(async () => {
       const client = await this.getRedisClient();
 
       try {
@@ -419,7 +454,7 @@ export class RedisClient<
         await client.unwatch();
         throw error;
       }
-    }, `moveJob(${id}, ${from} -> ${to})`);
+    }, `moveJob(${id}, ${from} -> ${to})`).pipe(Effect.asVoid);
   }
 
   /**
@@ -427,58 +462,279 @@ export class RedisClient<
    * @param {KeysMap<Payload, QueueName>} keys - The keys map
    * @param {QueueName} queueName - The queue name
    * @param {number} concurrency - The concurrency limit
-   * @returns {Promise<object>} Queue statistics
+   * @returns {Effect<object, Error>} Queue statistics
    */
-  public async getQueueStats(
+  public getQueueStats(
     keys: KeysMap<Payload, QueueName>,
     queueName: QueueName,
     concurrency: number,
-  ): Promise<{
-    name: QueueName;
-    concurrency: number;
-    waiting: number;
-    active: number;
-    failed: number;
-    completed: number;
-    total: number;
-    availableSlots: number;
-  }> {
-    const [waitingCount, activeCount, failedCount, completedCount] =
-      await Promise.all([
-        this.lLen(keys.waiting),
-        this.lLen(keys.active),
-        this.lLen(keys.failed),
-        this.lLen(keys.completed),
-      ]);
+  ): Effect.Effect<
+    {
+      name: QueueName;
+      concurrency: number;
+      waiting: number;
+      active: number;
+      failed: number;
+      completed: number;
+      total: number;
+      availableSlots: number;
+    },
+    Error
+  > {
+    const client = this;
 
-    return {
-      name: queueName,
-      concurrency,
-      waiting: waitingCount,
-      active: activeCount,
-      failed: failedCount,
-      completed: completedCount,
-      total: waitingCount + activeCount + failedCount + completedCount,
-      availableSlots:
-        concurrency === -1 ? -1 : Math.max(0, concurrency - activeCount),
-    };
+    return Effect.gen(function* () {
+      const waitingCount = yield* client.lLen(keys.waiting);
+      const activeCount = yield* client.lLen(keys.active);
+      const failedCount = yield* client.lLen(keys.failed);
+      const completedCount = yield* client.lLen(keys.completed);
+
+      return {
+        name: queueName,
+        concurrency,
+        waiting: waitingCount,
+        active: activeCount,
+        failed: failedCount,
+        completed: completedCount,
+        total: waitingCount + activeCount + failedCount + completedCount,
+        availableSlots:
+          concurrency === -1 ? -1 : Math.max(0, concurrency - activeCount),
+      };
+    });
   }
 
   /**
    * Set the progress of a job
    * @param {string} id - The job ID
    * @param {number} progress - The progress value
-   * @returns {Promise<void>}
+   * @returns {Effect<void, Error>}
    */
-  public async setJobProgress(id: string, progress: number): Promise<void> {
-    await this.executeWithRetry(async () => {
+  public setJobProgress(
+    id: string,
+    progress: number,
+  ): Effect.Effect<void, Error> {
+    return this.executeWithRetry(async () => {
       const client = await this.getRedisClient();
 
       await client.hSet(id, {
         progress: progress.toString(),
         updatedAt: Date.now().toString(),
       });
-    }, 'setJobProgress');
+    }, 'setJobProgress').pipe(Effect.asVoid);
+  }
+
+  /**
+   * Atomically claim the next waiting job into active state and set its lock.
+   */
+  public claimJob({
+    waitingKey,
+    activeKey,
+    locksKey,
+    eventsKey,
+    visibilityTimeoutMs,
+  }: {
+    waitingKey: string;
+    activeKey: string;
+    locksKey: string;
+    eventsKey: string;
+    visibilityTimeoutMs: number;
+  }): Effect.Effect<string | null, Error> {
+    const script = `
+      local id = redis.call('RPOP', KEYS[1])
+      if not id then return nil end
+      redis.call('HSET', id, 'state', 'active', 'updatedAt', ARGV[1])
+      redis.call('LPUSH', KEYS[2], id)
+      redis.call('ZADD', KEYS[3], tonumber(ARGV[1]) + tonumber(ARGV[2]), id)
+      redis.call('XADD', KEYS[4], '*', 'type', 'active', 'id', id)
+      return id
+    `;
+
+    return this.executeWithRetry(async () => {
+      const client = (await this.getRedisClient()) as unknown as {
+        eval: (
+          script: string,
+          options: { keys: Array<string>; arguments: Array<string> },
+        ) => Promise<unknown>;
+      };
+      const now = Date.now().toString();
+
+      const result = await client.eval(script, {
+        keys: [waitingKey, activeKey, locksKey, eventsKey],
+        arguments: [now, visibilityTimeoutMs.toString()],
+      });
+
+      return (result as string | null) ?? null;
+    }, `claimJob(${waitingKey})`);
+  }
+
+  /** Extend visibility lock for an active job. */
+  public extendActiveLock(
+    id: string,
+    locksKey: string,
+    visibilityTimeoutMs: number,
+  ): Effect.Effect<void, Error> {
+    return this.executeWithRetry(async () => {
+      const client = (await this.getRedisClient()) as unknown as {
+        zAdd: (
+          key: string,
+          members: Array<{ score: number; value: string }>,
+        ) => Promise<unknown>;
+      };
+      const score = Date.now() + visibilityTimeoutMs;
+      await client.zAdd(locksKey, [{ score, value: id }]);
+    }, `extendActiveLock(${id})`).pipe(Effect.asVoid);
+  }
+
+  /** Remove visibility lock for a finished job. */
+  public removeActiveLock(
+    id: string,
+    locksKey: string,
+  ): Effect.Effect<void, Error> {
+    return this.executeWithRetry(async () => {
+      const client = (await this.getRedisClient()) as unknown as {
+        zRem: (key: string, member: string) => Promise<unknown>;
+      };
+      await client.zRem(locksKey, id);
+    }, `removeActiveLock(${id})`).pipe(Effect.asVoid);
+  }
+
+  /**
+   * Move due delayed jobs into waiting list.
+   */
+  public promoteDueDelayed(
+    delayedKey: string,
+    waitingKey: string,
+    eventsKey: string,
+    limit = 100,
+  ): Effect.Effect<number, Error> {
+    const script = `
+      local now = tonumber(ARGV[1])
+      local limit = tonumber(ARGV[2])
+      local ids = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now, 'LIMIT', 0, limit)
+      for _, id in ipairs(ids) do
+        redis.call('ZREM', KEYS[1], id)
+        redis.call('LPUSH', KEYS[2], id)
+        redis.call('HSET', id, 'state', 'waiting', 'updatedAt', ARGV[1])
+        redis.call('XADD', KEYS[3], '*', 'type', 'saved', 'id', id)
+      end
+      return #ids
+    `;
+
+    return this.executeWithRetry(async () => {
+      const client = (await this.getRedisClient()) as unknown as {
+        eval: (
+          script: string,
+          options: { keys: Array<string>; arguments: Array<string> },
+        ) => Promise<unknown>;
+      };
+      const now = Date.now().toString();
+
+      const result = await client.eval(script, {
+        keys: [delayedKey, waitingKey, eventsKey],
+        arguments: [now, limit.toString()],
+      });
+
+      return Number(result ?? 0);
+    }, `promoteDueDelayed(${delayedKey})`);
+  }
+
+  /**
+   * Requeue a job into the delayed set with a delay.
+   */
+  public requeueJobWithDelay({
+    id,
+    jobData,
+    activeKey,
+    locksKey,
+    delayedKey,
+    eventsKey,
+    delayMs,
+  }: {
+    id: string;
+    jobData: JobData;
+    activeKey: string;
+    locksKey: string;
+    delayedKey: string;
+    eventsKey: string;
+    delayMs: number;
+  }): Effect.Effect<void, Error> {
+    const dueAt = Date.now() + delayMs;
+
+    return this.executeMulti(multi => {
+      const tx = multi as unknown as {
+        hSet: (key: string, data: unknown) => unknown;
+        lRem: (key: string, count: number, element: string) => unknown;
+        zRem: (key: string, element: string) => unknown;
+        zAdd: (
+          key: string,
+          members: Array<{ score: number; value: string }>,
+        ) => unknown;
+        xAdd: (key: string, id: string, message: unknown) => unknown;
+      };
+
+      tx.hSet(id, jobData);
+      tx.lRem(activeKey, 0, id);
+      tx.zRem(locksKey, id);
+      tx.zAdd(delayedKey, [{ score: dueAt, value: id }]);
+      tx.xAdd(eventsKey, '*', {
+        type: 'retrying',
+        id,
+      } satisfies RedisStreamEvents);
+      tx.xAdd(eventsKey, '*', {
+        type: 'delayed',
+        id,
+      } satisfies RedisStreamEvents);
+    }).pipe(Effect.asVoid);
+  }
+
+  /**
+   * Recover stalled jobs whose visibility locks expired.
+   * Moves them from active list back to waiting list.
+   */
+  public recoverStalled({
+    activeKey,
+    waitingKey,
+    locksKey,
+    eventsKey,
+    limit = 100,
+  }: {
+    activeKey: string;
+    waitingKey: string;
+    locksKey: string;
+    eventsKey: string;
+    limit?: number;
+  }): Effect.Effect<number, Error> {
+    const script = `
+      local now = tonumber(ARGV[1])
+      local limit = tonumber(ARGV[2])
+      local ids = redis.call('ZRANGEBYSCORE', KEYS[3], '-inf', now, 'LIMIT', 0, limit)
+      for _, id in ipairs(ids) do
+        redis.call('ZREM', KEYS[3], id)
+        redis.call('LREM', KEYS[1], 0, id)
+        redis.call('LPUSH', KEYS[2], id)
+        redis.call('HSET', id, 'state', 'waiting', 'updatedAt', ARGV[1])
+        redis.call('XADD', KEYS[4], '*', 'type', 'stalled', 'id', id)
+        redis.call('XADD', KEYS[4], '*', 'type', 'saved', 'id', id)
+      end
+      return #ids
+    `;
+
+    return this.executeWithRetry(async () => {
+      const client = (await this.getRedisClient()) as unknown as {
+        eval: (
+          script: string,
+          options: { keys: Array<string>; arguments: Array<string> },
+        ) => Promise<unknown>;
+      };
+      const now = Date.now().toString();
+
+      const result = await client.eval(script, {
+        keys: [activeKey, waitingKey, locksKey, eventsKey],
+        arguments: [now, limit.toString()],
+      });
+
+      return Number(result ?? 0);
+    }, `recoverStalled(${activeKey})`);
   }
 
   private buildRetrySchedule(): Schedule.Schedule<unknown, unknown, never> {
@@ -529,13 +785,13 @@ export class RedisClient<
    * @template T - The return type of the operation
    * @param {() => Promise<T>} operation - The operation to execute
    * @param {string} context - The context for error messages
-   * @returns {Promise<T>} The operation result
+   * @returns {Effect<T, Error>} The operation result
    * @private
    */
-  private async executeWithRetry<T>(
+  private executeWithRetry<T>(
     operation: () => Promise<T>,
     context: string,
-  ): Promise<T> {
+  ): Effect.Effect<T, Error> {
     const effect = Effect.tryPromise({
       try: operation,
       catch: error =>
@@ -552,11 +808,8 @@ export class RedisClient<
       ),
     );
 
-    const scheduled =
-      this.retrySchedule === null
-        ? effect
-        : Effect.retry(effect, { schedule: this.retrySchedule });
-
-    return await Effect.runPromise(scheduled);
+    return this.retrySchedule === null
+      ? effect
+      : Effect.retry(effect, { schedule: this.retrySchedule });
   }
 }

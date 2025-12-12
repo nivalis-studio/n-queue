@@ -14,6 +14,16 @@ export type JobData<
   state: JobState;
   createdAt: string;
   updatedAt: string;
+  /** Number of attempts so far. Optional for backward compatibility. */
+  attempts?: string;
+  /** Progress between 0 and 1. Optional. */
+  progress?: string;
+  /** Timestamp when job finished or last failed. Optional. */
+  processedAt?: string;
+  /** Last failure reason. Optional. */
+  failedReason?: string;
+  /** Serialized stacktrace array. Optional. */
+  stacktrace?: string;
 };
 
 export type JobConfig<

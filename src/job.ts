@@ -120,15 +120,13 @@ export class Job<
       return Effect.fail(new Error(`Invalid job ID format: ${id}`));
     }
 
-    return Effect.tryPromise({
-      try: async () => {
-        const jobData = await queue.redisClient.getJobData<UnpackJobName>(id);
-
+    return queue.redisClient.getJobData<UnpackJobName>(id).pipe(
+      Effect.map(jobData => {
         if (!jobData) {
           return null;
         }
 
-        return new Job<UnpackPayload, UnpackQueueName, UnpackJobName>({
+        const job = new Job<UnpackPayload, UnpackQueueName, UnpackJobName>({
           queue,
           name: jobData.name,
           payload:
@@ -138,12 +136,30 @@ export class Job<
           createdAt: jobData.createdAt,
           updatedAt: jobData.updatedAt,
         });
-      },
-      catch: error =>
-        new Error(`Failed to unpack job ${id}`, {
-          cause: error,
-        }),
-    });
+
+        job.attempts = Number(jobData.attempts ?? 0);
+        job.progress = Number(jobData.progress ?? 0);
+        job.processedAt = jobData.processedAt ?? null;
+        job.failedReason = jobData.failedReason ?? null;
+
+        if (jobData.stacktrace) {
+          try {
+            job.stacktrace = JSON.parse(jobData.stacktrace) as Array<string>;
+          } catch {
+            job.stacktrace = [];
+          }
+        }
+
+        return job;
+      }),
+      Effect.catchAll(error =>
+        Effect.fail(
+          new Error(`Failed to unpack job ${id}`, {
+            cause: error,
+          }),
+        ),
+      ),
+    );
   }
 
   public static async unpack<
@@ -192,6 +208,22 @@ export class Job<
   }
 
   /**
+   * Refreshes the job visibility lock while active.
+   * Call this periodically for long-running jobs.
+   */
+  public heartbeatEffect = (): Effect.Effect<void, Error> => {
+    return this.redisClient.extendActiveLock(
+      this.id,
+      this.queue.keys.locks,
+      this.queue.visibilityTimeoutMs,
+    );
+  };
+
+  public heartbeat = async (): Promise<void> => {
+    await runEffect(this.heartbeatEffect());
+  };
+
+  /**
    * Saves the job to Redis and adds it to the waiting queue
    * @returns {Effect<Job<any, any, any>, Error>} Job persisted and ready for processing
    */
@@ -199,32 +231,36 @@ export class Job<
     Job<Payload, QueueName, JobName>,
     Error
   > => {
-    return Effect.tryPromise({
-      try: async () => {
-        const savedJob = new Job<Payload, QueueName, JobName>({
-          queue: this.queue,
-          name: this.name,
-          payload: this.payload,
-          state: 'waiting',
-          id: this.id,
-          createdAt: this.createdAt,
-          updatedAt: Date.now().toString(),
-        });
+    const job = this;
 
-        await this.redisClient.saveJob(
-          this.id,
-          savedJob.prepare(),
-          this.queue.keys.waiting,
-          this.queue.keys.events,
-        );
+    return Effect.gen(function* () {
+      const savedJob = new Job<Payload, QueueName, JobName>({
+        queue: job.queue,
+        name: job.name,
+        payload: job.payload,
+        state: 'waiting',
+        id: job.id,
+        createdAt: job.createdAt,
+        updatedAt: Date.now().toString(),
+      });
 
-        return savedJob;
-      },
-      catch: error =>
-        new Error('Failed to save job', {
-          cause: error,
-        }),
-    });
+      yield* job.redisClient.saveJob(
+        job.id,
+        savedJob.prepare(),
+        job.queue.keys.waiting,
+        job.queue.keys.events,
+      );
+
+      return savedJob;
+    }).pipe(
+      Effect.catchAll(error =>
+        Effect.fail(
+          new Error('Failed to save job', {
+            cause: error,
+          }),
+        ),
+      ),
+    );
   };
 
   public save = async (): Promise<Job<Payload, QueueName, JobName>> => {
@@ -239,38 +275,42 @@ export class Job<
   public moveEffect = (
     state: JobState,
   ): Effect.Effect<Job<Payload, QueueName, JobName>, Error> => {
-    return Effect.tryPromise({
-      try: async () => {
-        if (this.state === state) {
-          return this;
-        }
+    const job = this;
 
-        if (this.state === 'waiting' && state === 'active') {
-          throw new Error(
-            'Cannot move job to active state from waiting state, use queue.process() instead',
-          );
-        }
+    return Effect.gen(function* () {
+      if (job.state === state) {
+        return job;
+      }
 
-        const oldState = this.state;
-        const newJob = this.withState(state);
-
-        await this.redisClient.moveJob(
-          this.id,
-          newJob.prepare(),
-          {
-            from: this.queue.keys[oldState],
-            to: this.queue.keys[state],
-          },
-          this.queue.jobId,
+      if (job.state === 'waiting' && state === 'active') {
+        throw new Error(
+          'Cannot move job to active state from waiting state, use queue.process() instead',
         );
+      }
 
-        return newJob;
-      },
-      catch: error =>
-        new Error(`Failed to move job to state ${state}`, {
-          cause: error,
-        }),
-    });
+      const oldState = job.state;
+      const newJob = job.withState(state);
+
+      yield* job.redisClient.moveJob(
+        job.id,
+        newJob.prepare(),
+        {
+          from: job.queue.keys[oldState],
+          to: job.queue.keys[state],
+        },
+        job.queue.jobId,
+      );
+
+      return newJob;
+    }).pipe(
+      Effect.catchAll(error =>
+        Effect.fail(
+          new Error(`Failed to move job to state ${state}`, {
+            cause: error,
+          }),
+        ),
+      ),
+    );
   };
 
   public move = async (
@@ -284,7 +324,7 @@ export class Job<
    * @returns {JobData} The job data ready for storage
    */
   public prepare = (): JobData => {
-    return {
+    const data: JobData = {
       name: this.name,
       payload: JSON.stringify(this.payload),
       queue: this.queue.name,
@@ -292,5 +332,28 @@ export class Job<
       updatedAt: this.updatedAt,
       state: this.state,
     };
+
+    // Optional fields for production features.
+    if (this.attempts > 0) {
+      data.attempts = this.attempts.toString();
+    }
+
+    if (this.progress !== undefined) {
+      data.progress = this.progress.toString();
+    }
+
+    if (this.processedAt) {
+      data.processedAt = this.processedAt;
+    }
+
+    if (this.failedReason) {
+      data.failedReason = this.failedReason;
+    }
+
+    if (this.stacktrace.length > 0) {
+      data.stacktrace = JSON.stringify(this.stacktrace);
+    }
+
+    return data;
   };
 }

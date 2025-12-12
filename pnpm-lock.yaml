@@ -27,6 +27,9 @@ catalogs:
     '@types/node':
       specifier: 22.2.0
       version: 22.2.0
+    effect:
+      specifier: 3.19.6
+      version: 3.19.6
     lefthook:
       specifier: 2.0.4
       version: 2.0.4
@@ -45,11 +48,8 @@ importers:
   .:
     dependencies:
       effect:
-        specifier: ^3.19.6
+        specifier: 'catalog:'
         version: 3.19.6
-      redis:
-        specifier: ^4.7.0
-        version: 4.7.1
       uuid:
         specifier: 'catalog:'
         version: 11.1.0
@@ -78,6 +78,9 @@ importers:
       lefthook:
         specifier: 'catalog:'
         version: 2.0.4
+      redis:
+        specifier: ^4.7.0
+        version: 4.7.1
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+
+FROM node:20-bookworm-slim
+
+# Install prerequisites for Bun install
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip && rm -rf /var/lib/apt/lists/*
+
+# pnpm via corepack (matches package.json packageManager)
+RUN corepack enable && corepack prepare pnpm@10.23.0 --activate
+
+# Install Bun (used to run `bun test`)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+WORKDIR /repo
+
+# Copy only lockfiles first for layer caching
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
+COPY src ./src
+COPY biome.json commitlint.config.mjs lefthook.yml .editorconfig .gitattributes .gitignore ./
+
+# Avoid running repo hooks in container
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
+ENV NODE_ENV=test
+
+CMD ["pnpm", "test"]

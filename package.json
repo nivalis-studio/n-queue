@@ -23,6 +23,8 @@
 		"lint": "biome check",
 		"lint:fix": "biome check --write",
 		"test": "bun test",
+		"test:docker": "docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from test",
+		"test:docker:down": "docker compose -f docker-compose.test.yml down -v",
 		"build": "zshy",
 		"prepack": "zshy",
 		"prepare": "lefthook install",
@@ -45,6 +47,7 @@
 		"@types/bun": "catalog:",
 		"@types/node": "catalog:",
 		"lefthook": "catalog:",
+		"redis": "^4.7.0",
 		"typescript": "catalog:",
 		"zshy": "catalog:"
 	},

@@ -1,7 +1,7 @@
 import type { JobState } from './job';
 import type { PayloadSchema, QueueNames } from './payload';
 
-export type Keys = 'id' | 'events' | JobState;
+export type Keys = 'id' | 'events' | 'delayed' | 'locks' | JobState;
 
 export type QueueKeys<
   Payload extends PayloadSchema,
@@ -25,5 +25,7 @@ export const getKeysMap = <
   active: `${name}:active`,
   failed: `${name}:failed`,
   completed: `${name}:completed`,
+  delayed: `${name}:delayed`,
+  locks: `${name}:locks`,
   events: `${name}:events`,
 });
