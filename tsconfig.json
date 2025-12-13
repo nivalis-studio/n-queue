@@ -17,6 +17,7 @@
 		"declarationDir": "dist",
 		"declarationMap": true,
 		"outDir": "dist",
+		"rootDir": "src",
 		"noFallthroughCasesInSwitch": true,
 		"forceConsistentCasingInFileNames": true,
 		"esModuleInterop": true,
@@ -29,5 +30,7 @@
 			"@/*": ["./src/*"]
 		},
 		"baseUrl": "."
-	}
+	},
+	"include": ["src/**/*.ts"],
+	"exclude": ["dist", "examples", "node_modules"]
 }

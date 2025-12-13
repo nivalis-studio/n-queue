@@ -27,18 +27,12 @@ catalogs:
     '@types/node':
       specifier: 22.2.0
       version: 22.2.0
-    effect:
-      specifier: 3.19.6
-      version: 3.19.6
     lefthook:
       specifier: 2.0.4
       version: 2.0.4
     typescript:
       specifier: 5.9.3
       version: 5.9.3
-    uuid:
-      specifier: 11.1.0
-      version: 11.1.0
     zshy:
       specifier: 0.6.0
       version: 0.6.0
@@ -48,10 +42,10 @@ importers:
   .:
     dependencies:
       effect:
-        specifier: 'catalog:'
+        specifier: 3.19.6
         version: 3.19.6
       uuid:
-        specifier: 'catalog:'
+        specifier: 11.1.0
         version: 11.1.0
     devDependencies:
       '@biomejs/biome':

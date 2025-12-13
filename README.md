@@ -1,5 +1,7 @@
 # @nivalis/n-queue
 
+[![CI](https://github.com/nivalis-studio/n-queue/actions/workflows/ci.yaml/badge.svg)](https://github.com/nivalis-studio/n-queue/actions/workflows/ci.yaml) [![npm](https://img.shields.io/npm/v/%40nivalis%2Fn-queue)](https://www.npmjs.com/package/@nivalis/n-queue)
+
 A robust, Redis-backed job queue system with type safety, event handling, and streaming capabilities.
 
 ## Features
@@ -14,11 +16,43 @@ A robust, Redis-backed job queue system with type safety, event handling, and st
 - 🔄 **Transaction Support**: Atomic operations for job state changes
 - 📊 **Queue Statistics**: Real-time queue metrics and monitoring
 
+## Compatibility
+
+- Node.js: 18, 20, 22 (CI)
+- Redis: 7.x (CI Docker)
+- OS: Linux (CI), macOS/Windows should work (no native deps)
+
 ## Installation
 
+- Requires Node.js 18+.
+- Requires a Redis server (tested with Redis 7).
+
 ```bash
-npm install @nivalis/n-queue
+npm install @nivalis/n-queue redis
 ```
+
+## 2-minute Quickstart (One Command)
+
+This repo includes a runnable demo in `examples/quickstart` that starts Redis + a worker and enqueues/executes one job.
+
+Prerequisites:
+- Docker (Docker Desktop is fine)
+
+From a fresh clone:
+
+```bash
+pnpm quickstart
+```
+
+Or, without pnpm:
+
+```bash
+docker compose -f examples/quickstart/docker-compose.yml up --build --abort-on-container-exit
+```
+
+## Demo (10 seconds)
+
+TODO: add a 10-second GIF showing `pnpm quickstart` (enqueue -> process -> stats).
 
 ## Quick Start
 
@@ -68,18 +102,18 @@ const emailJob = await emailQueue.add('sendEmail', {
   body: 'Welcome to our platform!'
 });
 
-// Process jobs with automatic completion/failure handling
+// Process a single job (automatic completion/failure handling)
 await emailQueue.process(async (job) => {
   console.log(`Processing ${job.name} job ${job.id}`);
   await sendEmail(job.payload);
-});
+}, {});
 
-// Or process specific job types
+// Or process a specific job type
 await emailQueue.process(async (job) => {
   await sendNotification(job.payload);
-}, 'sendNotification');
+}, { jobName: 'sendNotification' });
 
-// Stream jobs in real-time
+// Stream jobs in real-time (runs until you stop the process)
 await emailQueue.stream(async (job) => {
   console.log(`Processing streamed job ${job.id}`);
   await processJob(job);
@@ -155,7 +189,10 @@ class Queue<Payload, QueueName> {
 
   // Job Management
   add<JobName>(jobName: JobName, payload: Payload[QueueName][JobName]): Promise<Job>;
-  process(fn: (job: Job) => Promise<void>, jobName?: JobName): Promise<void>;
+  process(
+    fn: (job: Job) => Promise<void>,
+    options: { jobName?: JobName; jobId?: string }
+  ): Promise<void>;
   stream(fn: (job: Job) => Promise<void>, jobName?: JobName): Promise<void>;
 
   // Event Handling
@@ -164,14 +201,10 @@ class Queue<Payload, QueueName> {
 
   // Queue Information
   getStats(): Promise<{
-    name: QueueName;
-    concurrency: number;
     waiting: number;
     active: number;
     failed: number;
     completed: number;
-    total: number;
-    availableSlots: number;
   }>;
 }
 ```
@@ -203,9 +236,37 @@ class Job<Payload, QueueName, JobName> {
 ### Queue Options
 
 ```typescript
-interface QueueOptions {
-  concurrency?: number;  // Max concurrent jobs (-1 for unlimited)
-}
+type QueueOptions = {
+  // Max concurrent jobs (-1 for unlimited)
+  concurrency?: number;
+
+  // Job visibility / stall recovery
+  visibilityTimeoutMs?: number;
+  stallCheckIntervalMs?: number;
+
+  // Retry for failed jobs
+  retry?: {
+    maxAttempts?: number;
+    backoffStrategy?: {
+      initialDelay: number;
+      factor: number;
+      maxDelay: number;
+      jitter?: number;
+    };
+  };
+
+  // Optional integrations
+  logger?: {
+    debug?: (msg: string, meta?: unknown) => void;
+    info?: (msg: string, meta?: unknown) => void;
+    warn?: (msg: string, meta?: unknown) => void;
+    error?: (msg: string, meta?: unknown) => void;
+  };
+  metrics?: {
+    increment?: (name: string, labels?: Record<string, string>) => void;
+    observe?: (name: string, value: number, labels?: Record<string, string>) => void;
+  };
+};
 ```
 
 ### Job States
@@ -222,6 +283,9 @@ The queue emits the following events:
 - `active`: When a job starts processing
 - `completed`: When a job completes successfully
 - `failed`: When a job fails
+- `retrying`: When a job is scheduled for retry
+- `delayed`: When a job is re-queued with a delay
+- `stalled`: When an active job is recovered back to waiting
 - `progress`: When job progress is updated
 
 ## Best Practices
@@ -257,6 +321,13 @@ The queue emits the following events:
      await notifyFailure(job);
    });
    ```
+
+## Trust Signals
+
+- CI runs lint, typecheck, unit tests, and Docker integration tests on PRs.
+- Packages are published from version tags (`v*`) with npm provenance enabled.
+- Dependencies are pinned via `pnpm-lock.yaml` for reproducible installs.
+- Security reporting: see `SECURITY.md`.
 
 ## License
 

@@ -28,5 +28,5 @@ jobs:
       - name: Ensure npm supports trusted publishing
         run: npm install -g npm@latest
 
-      - name: Publish to npm
-        run: npm publish --registry=https://registry.npmjs.org
+      - name: Publish to npm (with provenance)
+        run: npm publish --registry=https://registry.npmjs.org --provenance

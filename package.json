@@ -19,20 +19,21 @@
 		"node": ">=18.0.0"
 	},
 	"scripts": {
-		"dev": "bun run --watch src/index.tsx",
+		"dev": "bun test --watch",
 		"lint": "biome check",
 		"lint:fix": "biome check --write",
 		"test": "bun test",
 		"test:docker": "docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from test",
 		"test:docker:down": "docker compose -f docker-compose.test.yml down -v",
+		"quickstart": "docker compose -f examples/quickstart/docker-compose.yml up --build --abort-on-container-exit",
 		"build": "zshy",
 		"prepack": "zshy",
 		"prepare": "lefthook install",
 		"ts": "tsc --noEmit --incremental"
 	},
 	"dependencies": {
-		"effect": "catalog:",
-		"uuid": "catalog:"
+		"effect": "3.19.6",
+		"uuid": "11.1.0"
 	},
 	"peerDependencies": {
 		"redis": "^4.7.0",
